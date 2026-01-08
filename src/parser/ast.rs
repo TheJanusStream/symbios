@@ -1,34 +1,48 @@
-/// A mathematical expression parsed from the string.
-/// This will be compiled to RPN Bytecode in Phase 2.
 #[derive(Debug, PartialEq, Clone)]
 pub enum Expr {
-    Number(f32),
-    Variable(String), // e.g., "x"
+    Number(f64),
+    Variable(String),
+    Call(String, Vec<Expr>),
+    // Unary
+    Not(Box<Expr>),
+    Neg(Box<Expr>),
+    // Binary
+    Pow(Box<Expr>, Box<Expr>),
     Add(Box<Expr>, Box<Expr>),
     Sub(Box<Expr>, Box<Expr>),
     Mul(Box<Expr>, Box<Expr>),
     Div(Box<Expr>, Box<Expr>),
-    // Logical operators for guards
+    // Relations
     Gt(Box<Expr>, Box<Expr>),
     Lt(Box<Expr>, Box<Expr>),
+    Ge(Box<Expr>, Box<Expr>),
+    Le(Box<Expr>, Box<Expr>),
     Eq(Box<Expr>, Box<Expr>),
+    Ne(Box<Expr>, Box<Expr>),
+    // Logical
+    And(Box<Expr>, Box<Expr>),
+    Or(Box<Expr>, Box<Expr>),
 }
 
-/// A module in a rule definition (e.g., "A(x, 1)")
 #[derive(Debug, PartialEq, Clone)]
 pub struct ModuleSym {
-    pub symbol: char, // We restrict symbols to single chars for standard L-System notation
-    pub params: Vec<Expr>, // Parameters can be expressions "x+1"
+    pub symbol: char,
+    pub params: Vec<Expr>,
 }
 
-/// A complete production rule.
-/// Format: LC < P(params) > RC : Condition -> Successor
 #[derive(Debug, PartialEq, Clone)]
 pub struct Rule {
-    pub probability: f32,
+    pub label: Option<String>,
+    pub probability: f64,
     pub predecessor: ModuleSym,
-    pub left_context: Option<ModuleSym>,
-    pub right_context: Option<ModuleSym>,
+    pub left_context: Vec<ModuleSym>,
+    pub right_context: Vec<ModuleSym>,
     pub condition: Option<Expr>,
     pub successors: Vec<ModuleSym>,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum Directive {
+    Ignore(Vec<char>),
+    Define(String, Expr),
 }

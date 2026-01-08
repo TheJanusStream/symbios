@@ -1,29 +1,26 @@
-/// The internal representation of the L-System state.
-/// Uses a Structure-of-Arrays (SoA) layout for cache locality and
-/// to avoid memory fragmentation associated with `Vec<Module>` structs.
+use thiserror::Error;
+
+#[derive(Error, Debug, PartialEq)]
+pub enum SymbiosError {
+    #[error("Parameter count {0} exceeds limit {1}")]
+    ParameterOverflow(usize, u16),
+    #[error("Unmatched bracket at index {0}")]
+    UnmatchedBracket(usize),
+    #[error("Ambiguous topology symbols: open and close are identical")]
+    AmbiguousTopology,
+    #[error("Max nesting depth exceeded")]
+    MaxNestingExceeded,
+    #[error("State capacity overflow")]
+    CapacityOverflow,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct SymbiosState {
-    /// The sequence of symbol identifiers.
-    /// u16 allows for 65,535 unique symbol types in the alphabet.
-    pub symbols: Vec<u16>,
-
-    /// The Monolithic Parameter Arena.
-    /// All parameters for all modules are packed contiguously here.
-    /// Access is managed via `param_offset` and `param_len`.
-    pub params: Vec<f32>,
-
-    /// The Topology Skip-Table.
-    /// Stores the index of the matching bracket (structural partner).
-    /// Used for O(1) context skipping.
-    /// For non-structural symbols, this can store self-index or 0.
-    pub topology: Vec<u32>,
-
-    /// Mapping to the Parameter Arena.
-    /// `offsets[i]` = start index in `params` for symbol `i`.
-    /// `lengths[i]` = number of parameters for symbol `i`.
-    /// We use parallel vectors to keep the `symbols` vector extremely dense.
-    pub offsets: Vec<u32>,
-    pub lengths: Vec<u8>,
+    symbols: Vec<u16>,
+    params: Vec<f64>,
+    topology: Vec<u32>,
+    offsets: Vec<u32>,
+    lengths: Vec<u16>,
 }
 
 impl SymbiosState {
@@ -31,7 +28,16 @@ impl SymbiosState {
         Self::default()
     }
 
-    /// Clears the buffers without deallocating memory (Reuse).
+    pub fn with_capacity(cap: usize) -> Self {
+        Self {
+            symbols: Vec::with_capacity(cap),
+            params: Vec::with_capacity(cap),
+            topology: Vec::with_capacity(cap),
+            offsets: Vec::with_capacity(cap),
+            lengths: Vec::with_capacity(cap),
+        }
+    }
+
     pub fn clear(&mut self) {
         self.symbols.clear();
         self.params.clear();
@@ -40,49 +46,99 @@ impl SymbiosState {
         self.lengths.clear();
     }
 
-    /// Pushes a module onto the end of the state.
-    pub fn push(&mut self, symbol: u16, parameters: &[f32]) {
-        self.symbols.push(symbol);
-
-        let start = self.params.len() as u32;
-        self.offsets.push(start);
-        self.lengths.push(parameters.len() as u8);
-
-        self.params.extend_from_slice(parameters);
-
-        // Topology is calculated in a separate pass,
-        // but we push a placeholder to keep alignment.
-        self.topology.push(0);
+    pub fn len(&self) -> usize {
+        self.symbols.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.symbols.is_empty()
     }
 
-    /// Returns a view of the module at index `i`.
+    pub fn push(&mut self, symbol: u16, parameters: &[f64]) -> Result<(), SymbiosError> {
+        if self.symbols.len() >= u32::MAX as usize - 1 {
+            return Err(SymbiosError::CapacityOverflow);
+        }
+        if (self.params.len() + parameters.len()) >= u32::MAX as usize {
+            return Err(SymbiosError::CapacityOverflow);
+        }
+        if parameters.len() > u16::MAX as usize {
+            return Err(SymbiosError::ParameterOverflow(parameters.len(), u16::MAX));
+        }
+
+        self.symbols.push(symbol);
+        self.offsets.push(self.params.len() as u32);
+        self.lengths.push(parameters.len() as u16);
+        self.params.extend_from_slice(parameters);
+        self.topology.push(u32::MAX);
+        Ok(())
+    }
+
+    pub fn calculate_topology(
+        &mut self,
+        open_sym: u16,
+        close_sym: u16,
+    ) -> Result<(), SymbiosError> {
+        if open_sym == close_sym {
+            return Err(SymbiosError::AmbiguousTopology);
+        }
+
+        for (i, &sym) in self.symbols.iter().enumerate() {
+            if sym == open_sym || sym == close_sym {
+                self.topology[i] = u32::MAX;
+            }
+        }
+
+        let mut stack = Vec::new();
+        const MAX_NESTING: usize = 4096;
+
+        for (i, &sym) in self.symbols.iter().enumerate() {
+            if sym == open_sym {
+                if stack.len() >= MAX_NESTING {
+                    return Err(SymbiosError::MaxNestingExceeded);
+                }
+                stack.push(i as u32);
+            } else if sym == close_sym {
+                if let Some(start_idx) = stack.pop() {
+                    self.topology[start_idx as usize] = i as u32;
+                    self.topology[i] = start_idx;
+                } else {
+                    return Err(SymbiosError::UnmatchedBracket(i));
+                }
+            }
+        }
+
+        if !stack.is_empty() {
+            return Err(SymbiosError::UnmatchedBracket(stack[0] as usize));
+        }
+        Ok(())
+    }
+
     pub fn get_view(&self, index: usize) -> Option<ModuleView<'_>> {
         if index >= self.symbols.len() {
             return None;
         }
-
-        let sym = self.symbols[index];
         let start = self.offsets[index] as usize;
         let len = self.lengths[index] as usize;
+        if start + len > self.params.len() {
+            return None;
+        }
 
-        // Safety: We control the push logic, so start/len are valid.
-        // In a hot loop, we might use unchecked access, but get_view is a utility.
-        let params = &self.params[start..start + len];
-        let skip = self.topology[index] as usize;
+        let skip = match self.topology[index] {
+            u32::MAX => None,
+            val if (val as usize) < self.symbols.len() => Some(val as usize),
+            _ => None,
+        };
 
         Some(ModuleView {
-            sym,
-            params,
+            sym: self.symbols[index],
+            params: &self.params[start..start + len],
             skip_idx: skip,
         })
     }
 }
 
-/// A temporary view into the SoA data, useful for higher-level logic.
-/// This is NOT stored; it is constructed on the fly.
 #[derive(Debug)]
 pub struct ModuleView<'a> {
     pub sym: u16,
-    pub params: &'a [f32],
-    pub skip_idx: usize,
+    pub params: &'a [f64],
+    pub skip_idx: Option<usize>,
 }

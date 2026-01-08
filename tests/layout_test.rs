@@ -1,32 +1,68 @@
-use symbios::SymbiosState;
+use symbios::{SymbiosState, core::SymbiosError};
 
 #[test]
-fn test_soa_push_and_view() {
+fn test_soa_layout_integrity() {
     let mut state = SymbiosState::new();
+    state.push(1, &[1.0, 2.0, 3.0]).unwrap();
+    state.push(2, &[]).unwrap();
+    state.push(3, &[4.0]).unwrap();
 
-    // Push Symbol 1 (A) with 2 params
-    state.push(1, &[10.0, 20.0]);
-    // Push Symbol 2 (B) with 0 params
-    state.push(2, &[]);
-    // Push Symbol 3 (C) with 3 params
-    state.push(3, &[0.1, 0.2, 0.3]);
+    let view_a = state.get_view(0).expect("Should have index 0");
+    assert_eq!(view_a.params, &[1.0, 2.0, 3.0]);
 
-    // Verify Symbol A
-    let view_a = state.get_view(0).unwrap();
-    assert_eq!(view_a.sym, 1);
-    assert_eq!(view_a.params, &[10.0, 20.0]);
+    let view_c = state.get_view(2).expect("Should have index 2");
+    assert_eq!(view_c.params, &[4.0]);
+}
 
-    // Verify Symbol B
-    let view_b = state.get_view(1).unwrap();
-    assert_eq!(view_b.sym, 2);
-    assert_eq!(view_b.params, &[]);
+#[test]
+fn test_topology_calculation() {
+    let mut state = SymbiosState::new();
+    let (open, close, leaf) = (100, 101, 1);
 
-    // Verify Symbol C
-    let view_c = state.get_view(2).unwrap();
-    assert_eq!(view_c.sym, 3);
-    assert_eq!(view_c.params, &[0.1, 0.2, 0.3]);
+    state.push(leaf, &[]).unwrap(); // 0
+    state.push(open, &[]).unwrap(); // 1
+    state.push(leaf, &[]).unwrap(); // 2
+    state.push(close, &[]).unwrap(); // 3
 
-    // Verify Arena density
-    assert_eq!(state.symbols.len(), 3);
-    assert_eq!(state.params.len(), 5); // 2 + 0 + 3
+    state
+        .calculate_topology(open, close)
+        .expect("Should validate");
+
+    assert_eq!(state.get_view(1).unwrap().skip_idx, Some(3));
+    assert_eq!(state.get_view(0).unwrap().skip_idx, None);
+}
+
+#[test]
+fn test_state_clearing() {
+    let mut state = SymbiosState::new();
+    state.push(1, &[1.0]).unwrap();
+    state.clear();
+    assert!(state.is_empty()); // This now compiles
+}
+
+#[test]
+fn test_param_overflow_safeguard() {
+    let mut state = SymbiosState::new();
+    let huge_params = vec![0.0; 65536];
+    let res = state.push(1, &huge_params);
+    assert_eq!(res, Err(SymbiosError::ParameterOverflow(65536, u16::MAX)));
+}
+
+#[test]
+fn test_topology_errors() {
+    let mut state = SymbiosState::new();
+    let (open, close) = (100, 101);
+
+    state.push(open, &[]).unwrap();
+    assert_eq!(
+        state.calculate_topology(open, close),
+        Err(SymbiosError::UnmatchedBracket(0))
+    );
+
+    state.clear();
+    state.push(close, &[]).unwrap();
+    assert_eq!(
+        state.calculate_topology(open, close),
+        Err(SymbiosError::UnmatchedBracket(0))
+    );
 }
