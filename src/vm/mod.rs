@@ -1,19 +1,50 @@
+/* src/vm/mod.rs */
 pub mod compiler;
 pub mod ops;
 
 pub use compiler::Compiler;
 pub use ops::Op;
+use std::fmt;
 
-/// Hardened Float Equality: Handles scale variance using relative epsilon.
-fn float_eq(a: f64, b: f64) -> bool {
+/// Robust floating point equality check.
+#[inline]
+pub fn float_eq(a: f64, b: f64) -> bool {
     if a == b {
         return true;
     }
-    let diff = (a - b).abs();
     let abs_a = a.abs();
     let abs_b = b.abs();
-    diff / (abs_a + abs_b).min(f64::MAX) < 1e-10
+    let diff = (a - b).abs();
+    if a == 0.0 || b == 0.0 || (abs_a + abs_b < f64::MIN_POSITIVE) {
+        return diff < (f64::EPSILON * 100.0);
+    }
+    diff / (abs_a + abs_b).min(f64::MAX) < 1e-8
 }
+
+#[derive(Debug, PartialEq)]
+pub enum VMError {
+    StackUnderflow,
+    StackOverflow,
+    MathError,
+    ParamOutOfBounds,
+    EmptyStack,
+    RuntimeError(String),
+}
+
+impl fmt::Display for VMError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            VMError::StackUnderflow => write!(f, "Stack underflow"),
+            VMError::StackOverflow => write!(f, "Stack overflow"),
+            VMError::MathError => write!(f, "Mathematical error (NaN/Inf)"),
+            VMError::ParamOutOfBounds => write!(f, "Parameter index out of bounds"),
+            VMError::EmptyStack => write!(f, "Stack empty at result time"),
+            VMError::RuntimeError(msg) => write!(f, "Runtime error: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for VMError {}
 
 #[derive(Debug, Default)]
 pub struct VirtualMachine {
@@ -34,7 +65,7 @@ impl VirtualMachine {
 
         for op in code {
             if self.stack.len() > Self::MAX_STACK_SIZE {
-                return Err("Stack overflow".into());
+                return Err(VMError::StackOverflow.to_string());
             }
 
             match op {
@@ -42,60 +73,93 @@ impl VirtualMachine {
                 Op::LoadParam(idx) => {
                     let val = *params
                         .get(*idx as usize)
-                        .ok_or("Parameter index out of bounds")?;
+                        .ok_or(VMError::ParamOutOfBounds.to_string())?;
                     self.stack.push(val);
                 }
-                Op::Add => self.binary_op(|a, b| a + b)?,
-                Op::Sub => self.binary_op(|a, b| a - b)?,
-                Op::Mul => self.binary_op(|a, b| a * b)?,
-                Op::Div => self.binary_op(|a, b| if b == 0.0 { f64::NAN } else { a / b })?,
-                Op::Pow => self.binary_op(|a, b| a.powf(b))?,
+                Op::Add => self.binary_op(|a, b| a + b).map_err(|e| e.to_string())?,
+                Op::Sub => self.binary_op(|a, b| a - b).map_err(|e| e.to_string())?,
+                Op::Mul => self.binary_op(|a, b| a * b).map_err(|e| e.to_string())?,
+                Op::Div => self
+                    .binary_op(|a, b| if b == 0.0 { f64::NAN } else { a / b })
+                    .map_err(|e| e.to_string())?,
+                Op::Pow => self
+                    .binary_op(|a, b| a.powf(b))
+                    .map_err(|e| e.to_string())?,
                 Op::Neg => {
-                    let a = self.pop()?;
+                    let a = self.pop().map_err(|e| e.to_string())?;
                     self.stack.push(-a);
                 }
-                Op::Eq => self.compare_op(|a, b| float_eq(a, b))?,
-                Op::Ne => self.compare_op(|a, b| !float_eq(a, b))?,
-                Op::Gt => self.compare_op(|a, b| a > b)?,
-                Op::Lt => self.compare_op(|a, b| a < b)?,
-                Op::Ge => self.compare_op(|a, b| a >= b)?,
-                Op::Le => self.compare_op(|a, b| a <= b)?,
-                Op::And => self.binary_op(|a, b| if a != 0.0 && b != 0.0 { 1.0 } else { 0.0 })?,
-                Op::Or => self.binary_op(|a, b| if a != 0.0 || b != 0.0 { 1.0 } else { 0.0 })?,
+                Op::Eq => self
+                    .compare_op(|a, b| float_eq(a, b))
+                    .map_err(|e| e.to_string())?,
+                Op::Ne => self
+                    .compare_op(|a, b| !float_eq(a, b))
+                    .map_err(|e| e.to_string())?,
+                Op::Gt => self.compare_op(|a, b| a > b).map_err(|e| e.to_string())?,
+                Op::Lt => self.compare_op(|a, b| a < b).map_err(|e| e.to_string())?,
+                Op::Ge => self.compare_op(|a, b| a >= b).map_err(|e| e.to_string())?,
+                Op::Le => self.compare_op(|a, b| a <= b).map_err(|e| e.to_string())?,
+                Op::And => self
+                    .binary_op(|a, b| if a != 0.0 && b != 0.0 { 1.0 } else { 0.0 })
+                    .map_err(|e| e.to_string())?,
+                Op::Or => self
+                    .binary_op(|a, b| if a != 0.0 || b != 0.0 { 1.0 } else { 0.0 })
+                    .map_err(|e| e.to_string())?,
                 Op::Not => {
-                    let a = self.pop()?;
+                    let a = self.pop().map_err(|e| e.to_string())?;
                     self.stack.push(if a == 0.0 { 1.0 } else { 0.0 });
                 }
             }
         }
 
-        let res = self.stack.last().copied().ok_or("Empty stack result")?;
+        let res = self
+            .stack
+            .last()
+            .copied()
+            .ok_or(VMError::EmptyStack.to_string())?;
         if res.is_nan() {
-            return Err("VM Runtime Error: Operation resulted in NaN".into());
+            return Err(VMError::MathError.to_string());
         }
         Ok(res)
     }
 
-    fn pop(&mut self) -> Result<f64, String> {
-        self.stack.pop().ok_or("Stack underflow".to_string())
+    fn pop(&mut self) -> Result<f64, VMError> {
+        self.stack.pop().ok_or(VMError::StackUnderflow)
     }
 
-    fn binary_op<F>(&mut self, f: F) -> Result<(), String>
+    fn binary_op<F>(&mut self, op: F) -> Result<(), VMError>
     where
-        F: FnOnce(f64, f64) -> f64,
+        F: Fn(f64, f64) -> f64,
     {
-        let b = self.pop()?;
-        let a = self.pop()?;
-        self.stack.push(f(a, b));
+        // FIX: Check stack depth BEFORE popping to prevent corruption
+        if self.stack.len() < 2 {
+            return Err(VMError::StackUnderflow);
+        }
+
+        let b = self.stack.pop().unwrap();
+        let a = self.stack.pop().unwrap();
+
+        let result = op(a, b);
+
+        // FIX: Strictly treat NaN as a runtime error in derivation logic
+        if result.is_nan() {
+            return Err(VMError::MathError);
+        }
+
+        self.stack.push(result);
         Ok(())
     }
 
-    fn compare_op<F>(&mut self, f: F) -> Result<(), String>
+    fn compare_op<F>(&mut self, f: F) -> Result<(), VMError>
     where
         F: FnOnce(f64, f64) -> bool,
     {
-        let b = self.pop()?;
-        let a = self.pop()?;
+        // Compare ops also need 2 args
+        if self.stack.len() < 2 {
+            return Err(VMError::StackUnderflow);
+        }
+        let b = self.stack.pop().unwrap();
+        let a = self.stack.pop().unwrap();
         // IEEE-754: Comparisons with NaN are False. No longer erroring.
         self.stack.push(if f(a, b) { 1.0 } else { 0.0 });
         Ok(())

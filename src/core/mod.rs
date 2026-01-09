@@ -118,10 +118,12 @@ impl SymbiosState {
             Some(m.topology_link as usize)
         };
 
+        let params = self.params.get(start..end)?;
+
         Some(ModuleView {
             sym: m.symbol,
             age: self.current_time - m.birth_time,
-            params: &self.params[start..end],
+            params,
             skip_idx: skip,
         })
     }

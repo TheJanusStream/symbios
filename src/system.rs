@@ -276,19 +276,28 @@ pub mod matching {
         while curr < state.len() {
             let view = state.get_view(curr).unwrap();
 
-            // A. Ignore Check
+            // A. Ignore Check (Noise)
             if ignore.contains(&view.sym) {
                 curr += 1;
                 continue;
             }
 
-            // B. Skip Logic
-            // If we hit an opening bracket '[', we might need to enter it OR skip it
-            // depending on standard L-system definitions.
-            // Standard 2L logic: The main axis continues *past* the branch.
-            // Branches are usually considered "Right Context" only if explicitly requested.
-            // For standard "Signal Propagation", we usually skip OVER branches when
-            // looking for the next segment on the main axis.
+            // B. Symbol Match (Signal)
+            // Fix: Check for match BEFORE skipping branch.
+            // If pattern explicitly asks for '[', we must match it here.
+            if view.sym == pattern[pat_idx] {
+                pat_idx += 1;
+                if pat_idx >= pattern.len() {
+                    return true;
+                }
+                // We matched a symbol. Move to next position in string
+                curr += 1;
+                continue;
+            }
+
+            // C. Skip Logic (Structure)
+            // If we didn't match the symbol, and it's a branch start,
+            // we assume it is a branch OFF the main axis and skip it.
             if let Some(skip_target) = view.skip_idx {
                 // If it's an opening bracket (link points forwards/larger)
                 if skip_target > curr {
@@ -297,18 +306,10 @@ pub mod matching {
                     continue;
                 }
             }
-            // Note: Closing brackets ']' are just ignored in forward scan of main axis
 
-            // C. Symbol Match
-            if view.sym == pattern[pat_idx] {
-                pat_idx += 1;
-                if pat_idx >= pattern.len() {
-                    return true;
-                }
-            } else {
-                return false;
-            }
-            curr += 1;
+            // D. Mismatch
+            // Not ignored, didn't match pattern, not a skippable branch.
+            return false;
         }
         false
     }
