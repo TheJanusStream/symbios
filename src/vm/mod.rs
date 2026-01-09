@@ -60,7 +60,12 @@ impl VirtualMachine {
         }
     }
 
-    pub fn eval(&mut self, code: &[Op], params: &[f64]) -> Result<f64, String> {
+    pub fn eval(
+        &mut self,
+        code: &[Op],
+        params: &[f64],
+        predecessor_age: f64,
+    ) -> Result<f64, String> {
         self.stack.clear();
 
         for op in code {
@@ -76,6 +81,7 @@ impl VirtualMachine {
                         .ok_or(VMError::ParamOutOfBounds.to_string())?;
                     self.stack.push(val);
                 }
+                Op::LoadAge => self.stack.push(predecessor_age),
                 Op::Add => self.binary_op(|a, b| a + b).map_err(|e| e.to_string())?,
                 Op::Sub => self.binary_op(|a, b| a - b).map_err(|e| e.to_string())?,
                 Op::Mul => self.binary_op(|a, b| a * b).map_err(|e| e.to_string())?,

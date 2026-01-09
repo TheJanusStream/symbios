@@ -129,7 +129,12 @@ impl SymbiosState {
     }
 
     pub fn advance_time(&mut self, dt: f64) {
-        self.current_time += dt;
+        if dt.is_finite() && dt >= 0.0 {
+            self.current_time += dt;
+        } else {
+            // In a real crate, we might return Result or log error.
+            // For now, silently ignoring invalid time steps prevents corruption.
+        }
     }
 }
 

@@ -21,7 +21,7 @@ fn test_bridge_compilation() {
     // Check Rule Structure
     let rule = &system.rules[0];
     assert_eq!(rule.predecessor, 0); // Symbol A is 0
-    assert_eq!(rule.param_count, 2); // x, y
+    assert_eq!(rule.expected_arities[0], 2); // x, y
 
     // Check Condition Bytecode: x > 5
     // Expect: [LoadParam(0), Push(5.0), Gt]

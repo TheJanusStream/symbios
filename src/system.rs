@@ -12,6 +12,8 @@ pub enum SystemError {
     CompileError(String),
     #[error("Invalid predecessor parameter")]
     InvalidPredecessorParam,
+    #[error("Interner error: {0}")]
+    InternerError(String),
 }
 
 #[derive(Debug, Clone)]
@@ -28,7 +30,9 @@ pub struct RuntimeRule {
     pub probability: f64,
     pub condition: Option<Vec<Op>>,
     pub successors: Vec<RuntimeModule>,
-    pub param_count: usize,
+    // Arity Enforcement: Store expected param count for [Pred, L1, L2..., R1, R2...]
+    // The Compiler assumes this exact layout.
+    pub expected_arities: Vec<usize>,
 }
 
 pub struct System {
@@ -53,13 +57,14 @@ impl System {
             parser::parse_rule(rule_src).map_err(|e| SystemError::ParseError(e.to_string()))?;
 
         let mut param_names = Vec::new();
+        let mut expected_arities = Vec::new();
+
+        // 1. Predecessor
+        expected_arities.push(rule_ast.predecessor.params.len());
         for param in &rule_ast.predecessor.params {
             if let ast::Expr::Variable(name) = param {
                 if param_names.contains(name) {
-                    return Err(SystemError::CompileError(format!(
-                        "Shadowing check failed: {}",
-                        name
-                    )));
+                    return Err(SystemError::CompileError(format!("Shadowing: {}", name)));
                 }
                 param_names.push(name.clone());
             } else {
@@ -67,18 +72,39 @@ impl System {
             }
         }
 
+        // 2. Left Context
+        for m in &rule_ast.left_context {
+            expected_arities.push(m.params.len());
+            for param in &m.params {
+                if let ast::Expr::Variable(name) = param {
+                    param_names.push(name.clone());
+                }
+            }
+        }
+
+        // 3. Right Context
+        for m in &rule_ast.right_context {
+            expected_arities.push(m.params.len());
+            for param in &m.params {
+                if let ast::Expr::Variable(name) = param {
+                    param_names.push(name.clone());
+                }
+            }
+        }
+
         let mut compiler = Compiler::new(param_names);
+
         let pred_sym = self
             .interner
-            .intern(&rule_ast.predecessor.symbol)
-            .map_err(SystemError::CompileError)?;
+            .get_or_intern(&rule_ast.predecessor.symbol)
+            .map_err(SystemError::InternerError)?;
 
         let mut left_ctx = Vec::new();
         for m in rule_ast.left_context {
             left_ctx.push(
                 self.interner
-                    .intern(&m.symbol)
-                    .map_err(SystemError::CompileError)?,
+                    .get_or_intern(&m.symbol)
+                    .map_err(SystemError::InternerError)?,
             );
         }
 
@@ -86,8 +112,8 @@ impl System {
         for m in rule_ast.right_context {
             right_ctx.push(
                 self.interner
-                    .intern(&m.symbol)
-                    .map_err(SystemError::CompileError)?,
+                    .get_or_intern(&m.symbol)
+                    .map_err(SystemError::InternerError)?,
             );
         }
 
@@ -101,8 +127,8 @@ impl System {
         for succ in &rule_ast.successors {
             let succ_sym = self
                 .interner
-                .intern(&succ.symbol)
-                .map_err(SystemError::CompileError)?;
+                .get_or_intern(&succ.symbol)
+                .map_err(SystemError::InternerError)?;
             let mut compiled_params = Vec::new();
             for expr in &succ.params {
                 compiled_params.push(compiler.compile(expr).map_err(SystemError::CompileError)?);
@@ -120,7 +146,7 @@ impl System {
             probability: rule_ast.probability,
             condition: condition_code,
             successors: runtime_successors,
-            param_count: rule_ast.predecessor.params.len(),
+            expected_arities, // Stored for runtime check
         });
         Ok(())
     }
@@ -133,8 +159,8 @@ impl System {
                 .map_err(|e| SystemError::ParseError(e.to_string()))?;
             let sym_id = self
                 .interner
-                .intern(&module.symbol)
-                .map_err(SystemError::CompileError)?;
+                .get_or_intern(&module.symbol)
+                .map_err(SystemError::InternerError)?;
             let mut values = Vec::new();
             for expr in module.params {
                 if let ast::Expr::Number(v) = expr {
@@ -154,49 +180,92 @@ impl System {
 
 pub mod matching {
     use crate::core::SymbiosState;
-    use crate::system::SystemError;
-    use crate::vm::{Op, VirtualMachine};
+    use crate::system::{RuntimeRule, SystemError};
+    use crate::vm::VirtualMachine;
 
-    /// Matches a rule's context requirements against the current state at `index`.
     pub fn matches(
         state: &SymbiosState,
         index: usize,
-        predecessor_sym: u16,
-        left_context: &[u16],
-        right_context: &[u16],
-        condition: Option<&[Op]>,
+        rule: &RuntimeRule,
         ignore: &[u16],
         vm: &mut VirtualMachine,
     ) -> Result<bool, SystemError> {
-        let view = state
+        let pred_view = state
             .get_view(index)
             .ok_or(SystemError::InvalidPredecessorParam)?;
 
-        // 1. Match Predecessor
-        if view.sym != predecessor_sym {
+        // 1. Symbol Match
+        if pred_view.sym != rule.predecessor {
             return Ok(false);
         }
 
-        // 2. Match Left Context
-        if !left_context.is_empty() {
-            if !match_left(state, index, left_context, ignore) {
+        // 2. Arity Match (Predecessor) - CRITICAL FIX for Alignment
+        if pred_view.params.len() != rule.expected_arities[0] {
+            return Ok(false);
+        }
+
+        // 3. Context Match & Collect
+        let mut left_indices = Vec::new();
+        if !rule.left_context.is_empty() {
+            if !match_left(state, index, &rule.left_context, ignore, &mut left_indices) {
                 return Ok(false);
             }
         }
 
-        // 3. Match Right Context
-        if !right_context.is_empty() {
-            if !match_right(state, index, right_context, ignore) {
+        let mut right_indices = Vec::new();
+        if !rule.right_context.is_empty() {
+            if !match_right(
+                state,
+                index,
+                &rule.right_context,
+                ignore,
+                &mut right_indices,
+            ) {
                 return Ok(false);
             }
         }
 
-        // 4. Match Condition
-        if let Some(code) = condition {
+        // 4. Arity Match (Context)
+        // Verify that every found context neighbor has the exact param count expected by the rule.
+        // Left context arities start at index 1.
+        for (i, &ctx_idx) in left_indices.iter().enumerate() {
+            let view = state
+                .get_view(ctx_idx)
+                .ok_or(SystemError::InvalidPredecessorParam)?;
+            if view.params.len() != rule.expected_arities[1 + i] {
+                return Ok(false);
+            }
+        }
+        // Right context arities start after Left.
+        let right_offset = 1 + rule.left_context.len();
+        for (i, &ctx_idx) in right_indices.iter().enumerate() {
+            let view = state
+                .get_view(ctx_idx)
+                .ok_or(SystemError::InvalidPredecessorParam)?;
+            if view.params.len() != rule.expected_arities[right_offset + i] {
+                return Ok(false);
+            }
+        }
+
+        // 5. Condition Eval
+        if let Some(code) = &rule.condition {
+            // Build Context Frame: Pred -> Left -> Right
+            // Only strictly valid due to Arity Checks above.
+            let mut context_frame = Vec::new();
+            context_frame.extend_from_slice(pred_view.params);
+
+            for &i in &left_indices {
+                // Safe unwrap: verified in step 4
+                context_frame.extend_from_slice(state.get_view(i).unwrap().params);
+            }
+            for &i in &right_indices {
+                context_frame.extend_from_slice(state.get_view(i).unwrap().params);
+            }
+
             let res = vm
-                .eval(code, view.params)
+                .eval(code, &context_frame, pred_view.age)
                 .map_err(|e| SystemError::CompileError(e))?;
-            // IEEE-754: 0.0 is False, anything else is True
+
             if res == 0.0 {
                 return Ok(false);
             }
@@ -205,23 +274,26 @@ pub mod matching {
         Ok(true)
     }
 
-    /// Scans backwards, skipping branches to find the main axis ancestor.
     fn match_left(
         state: &SymbiosState,
         start_index: usize,
         pattern: &[u16],
         ignore: &[u16],
+        matched_indices: &mut Vec<usize>,
     ) -> bool {
         if start_index == 0 {
             return false;
         }
         let mut curr = start_index - 1;
-        let mut pat_idx = pattern.len() - 1; // Match pattern right-to-left
+        let mut pat_idx = pattern.len() - 1;
 
         loop {
-            let view = state.get_view(curr).unwrap(); // Safe: curr < start_index
+            // SAFE: Remove unwrap
+            let view = match state.get_view(curr) {
+                Some(v) => v,
+                None => return false, // Should be impossible if index logic is sound, but safe
+            };
 
-            // A. Ignore Check
             if ignore.contains(&view.sym) {
                 if curr == 0 {
                     return false;
@@ -230,14 +302,9 @@ pub mod matching {
                 continue;
             }
 
-            // B. Skip Logic (ABOP p. 32)
-            // If we hit a closing bracket ']', we must skip the entire branch
-            // using the topology link.
             if let Some(skip_target) = view.skip_idx {
-                // If it's a closing bracket (topology link points backwards/smaller)
                 if skip_target < curr {
                     curr = skip_target;
-                    // Move one more step back to avoid processing the opening bracket
                     if curr == 0 {
                         return false;
                     }
@@ -246,14 +313,15 @@ pub mod matching {
                 }
             }
 
-            // C. Symbol Match
             if view.sym == pattern[pat_idx] {
+                matched_indices.push(curr);
                 if pat_idx == 0 {
-                    return true; // Match Complete
+                    matched_indices.reverse();
+                    return true;
                 }
                 pat_idx -= 1;
             } else {
-                return false; // Mismatch
+                return false;
             }
 
             if curr == 0 {
@@ -263,52 +331,44 @@ pub mod matching {
         }
     }
 
-    /// Scans forwards.
     fn match_right(
         state: &SymbiosState,
         start_index: usize,
         pattern: &[u16],
         ignore: &[u16],
+        matched_indices: &mut Vec<usize>,
     ) -> bool {
         let mut curr = start_index + 1;
         let mut pat_idx = 0;
 
         while curr < state.len() {
-            let view = state.get_view(curr).unwrap();
+            let view = match state.get_view(curr) {
+                Some(v) => v,
+                None => return false,
+            };
 
-            // A. Ignore Check (Noise)
             if ignore.contains(&view.sym) {
                 curr += 1;
                 continue;
             }
 
-            // B. Symbol Match (Signal)
-            // Fix: Check for match BEFORE skipping branch.
-            // If pattern explicitly asks for '[', we must match it here.
             if view.sym == pattern[pat_idx] {
+                matched_indices.push(curr);
                 pat_idx += 1;
                 if pat_idx >= pattern.len() {
                     return true;
                 }
-                // We matched a symbol. Move to next position in string
                 curr += 1;
                 continue;
             }
 
-            // C. Skip Logic (Structure)
-            // If we didn't match the symbol, and it's a branch start,
-            // we assume it is a branch OFF the main axis and skip it.
             if let Some(skip_target) = view.skip_idx {
-                // If it's an opening bracket (link points forwards/larger)
                 if skip_target > curr {
-                    // Skip the branch content
                     curr = skip_target + 1;
                     continue;
                 }
             }
 
-            // D. Mismatch
-            // Not ignored, didn't match pattern, not a skippable branch.
             return false;
         }
         false

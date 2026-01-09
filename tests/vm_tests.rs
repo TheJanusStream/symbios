@@ -28,7 +28,7 @@ fn test_compile_and_eval_arithmetic() {
     // Execution
     let mut vm = VirtualMachine::new();
     let args = vec![10.0, 5.0]; // x=10, y=5 -> 10*2 + 5 = 25
-    let result = vm.eval(&code, &args).expect("Runtime error");
+    let result = vm.eval(&code, &args, 0.0).expect("Runtime error");
 
     assert_eq!(result, 25.0);
 }
@@ -49,9 +49,9 @@ fn test_logic_and_guards() {
     let mut vm = VirtualMachine::new();
 
     // False case
-    assert_eq!(vm.eval(&code, &[3.0]).unwrap(), 0.0);
+    assert_eq!(vm.eval(&code, &[3.0], 0.0).unwrap(), 0.0);
     // True case
-    assert_eq!(vm.eval(&code, &[6.0]).unwrap(), 1.0);
+    assert_eq!(vm.eval(&code, &[6.0], 0.0).unwrap(), 1.0);
 }
 
 #[test]
@@ -59,7 +59,7 @@ fn test_stack_underflow_protection() {
     let mut vm = VirtualMachine::new();
     // Try to add with empty stack
     let code = vec![Op::Add];
-    let res = vm.eval(&code, &[]);
+    let res = vm.eval(&code, &[], 0.0);
     assert!(res.is_err());
     assert_eq!(res.unwrap_err(), "Stack underflow");
 }
