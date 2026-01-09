@@ -1,4 +1,3 @@
-/* src/parser/mod.rs */
 pub mod ast;
 
 use crate::parser::ast::{Directive, Expr, ModuleSym, Rule};
@@ -18,8 +17,6 @@ const MAX_RECURSION_DEPTH: usize = 64;
 const MAX_IDENTIFIER_LEN: usize = 64;
 const MAX_ARG_COUNT: usize = 32;
 const MAX_SUCCESSORS: usize = 128;
-
-// --- Lexical ---
 
 fn space_or_comment<'a, E: ParseError<&'a str>>(input: &'a str) -> IResult<&'a str, (), E> {
     let comment = alt((
@@ -61,8 +58,6 @@ fn finite_float(input: &str) -> IResult<&str, f64> {
     let (input, val) = verify(double, |x: &f64| x.is_finite()).parse(input)?;
     Ok((input, val))
 }
-
-// --- Expressions ---
 
 pub fn parse_expr(input: &str) -> IResult<&str, Expr> {
     ws(|i| parse_expr_impl(i, 0)).parse(input)
@@ -122,32 +117,36 @@ fn parse_relational(input: &str, depth: usize) -> IResult<&str, Expr> {
 fn parse_addition(input: &str, depth: usize) -> IResult<&str, Expr> {
     let (mut input, mut acc) = parse_multiplication(input, depth)?;
 
-    // [FIX] Guard against consuming the '-' in '->'
-    // We match + or -, but ONLY if not followed by >
     loop {
-        // Peek to see if we have an operator
-        let parse_op = ws(one_of::<&str, &str, Error<&str>>("+-"));
-        let mut check = peek(pair(parse_op, opt(c_char('>'))));
+        // Manual Lookahead Fix to prevent OneOf errors
+        // 1. Skip whitespace manually to check the next characters
+        let (trimmed, _) = space_or_comment::<Error<&str>>(input).unwrap_or((input, ()));
 
-        match check.parse(input) {
-            Ok((_, (op_char, maybe_gt))) => {
-                if op_char == '-' && maybe_gt == Some('>') {
-                    // It is an arrow '->', break loop to let rule parser handle it
-                    break;
-                }
-
-                // Safe to consume
-                let (next, op) = ws(one_of("+-")).parse(input)?;
-                let (next, rhs) = parse_multiplication(next, depth)?;
-                acc = match op {
-                    '+' => Expr::Add(Box::new(acc), Box::new(rhs)),
-                    '-' => Expr::Sub(Box::new(acc), Box::new(rhs)),
-                    _ => unreachable!(),
-                };
-                input = next;
-            }
-            Err(_) => break, // No operator
+        // 2. Check for "->" explicitly (Exit Condition)
+        if trimmed.starts_with("->") {
+            break;
         }
+
+        // 3. Manual Operator Check
+        let op_char = trimmed.chars().next();
+        let op = match op_char {
+            Some('+') => '+',
+            Some('-') => '-',
+            _ => break, // Not an additive operator
+        };
+
+        // 4. Consume the operator using parser to handle whitespace correctly
+        let (next, _) = ws(c_char::<&str, Error<&str>>(op)).parse(input)?;
+
+        // 5. Parse RHS
+        let (next, rhs) = parse_multiplication(next, depth)?;
+
+        acc = match op {
+            '+' => Expr::Add(Box::new(acc), Box::new(rhs)),
+            '-' => Expr::Sub(Box::new(acc), Box::new(rhs)),
+            _ => unreachable!(),
+        };
+        input = next;
     }
     Ok((input, acc))
 }
@@ -240,8 +239,6 @@ fn parse_arg_list(input: &str, depth: usize) -> IResult<&str, Vec<Expr>> {
     Ok((input, args))
 }
 
-// --- L-System Grammar ---
-
 fn parse_symbol(input: &str) -> IResult<&str, String> {
     alt((identifier, map(one_of("+-/&^[]|\\!$%"), |c| c.to_string()))).parse(input)
 }
@@ -268,17 +265,11 @@ fn parse_module_impl(input: &str, depth: usize) -> IResult<&str, ModuleSym> {
     ))
 }
 
-pub fn parse_rule(input: &str) -> IResult<&str, Rule> {
-    let mut label = None;
+fn parse_rule_structure(input: &str) -> IResult<&str, Rule> {
     let mut probability = 1.0;
     let mut input = input;
 
-    if let Ok((next, l)) =
-        terminated(ws(identifier), ws(c_char::<&str, Error<&str>>(':'))).parse(input)
-    {
-        label = Some(l);
-        input = next;
-    }
+    // Optional Probability
     if let Ok((next, p)) =
         terminated(ws(finite_float), ws(c_char::<&str, Error<&str>>(':'))).parse(input)
     {
@@ -286,6 +277,7 @@ pub fn parse_rule(input: &str) -> IResult<&str, Rule> {
         input = next;
     }
 
+    // Left Context
     let (input, left_context) = if let Ok((next, (lc, _))) = many_till::<&str, Error<&str>, _, _>(
         ws(parse_module),
         peek(ws(c_char::<&str, Error<&str>>('<'))),
@@ -298,10 +290,13 @@ pub fn parse_rule(input: &str) -> IResult<&str, Rule> {
         (input, Vec::new())
     };
 
+    // Predecessor
     let (input, predecessor) = ws(parse_module).parse(input)?;
 
+    // Right Context
     let (input, right_context) =
         if let Ok((next, _)) = ws(c_char::<&str, Error<&str>>('>')).parse(input) {
+            // Terminator is either ':' (condition) or '->' (successor)
             let term = alt((map(ws(c_char(':')), |_| ()), map(ws(tag("->")), |_| ())));
             let (next, (rc, _)) =
                 many_till::<&str, Error<&str>, _, _>(ws(parse_module), peek(term)).parse(next)?;
@@ -310,10 +305,13 @@ pub fn parse_rule(input: &str) -> IResult<&str, Rule> {
             (input, Vec::new())
         };
 
+    // Condition
     let (input, condition) = opt(preceded(ws(c_char(':')), parse_expr)).parse(input)?;
 
+    // Arrow
     let (input, _) = ws(tag("->")).parse(input)?;
 
+    // Successors
     let mut successors = Vec::new();
     let mut curr = input;
     loop {
@@ -335,7 +333,7 @@ pub fn parse_rule(input: &str) -> IResult<&str, Rule> {
     Ok((
         curr,
         Rule {
-            label,
+            label: None, // Set by wrapper
             probability,
             predecessor,
             left_context,
@@ -344,6 +342,29 @@ pub fn parse_rule(input: &str) -> IResult<&str, Rule> {
             successors,
         },
     ))
+}
+
+pub fn parse_rule(input: &str) -> IResult<&str, Rule> {
+    // We use alt to handle the Label ambiguity.
+    // Path 1: "Label : RuleStructure"
+    // Path 2: "RuleStructure"
+    // If Path 1 fails (e.g. because the 'Label' was actually a Predecessor and the rest didn't match),
+    // we backtrack and try Path 2.
+
+    alt((
+        map(
+            pair(
+                terminated(ws(identifier), ws(c_char::<&str, Error<&str>>(':'))),
+                parse_rule_structure,
+            ),
+            |(l, mut r)| {
+                r.label = Some(l);
+                r
+            },
+        ),
+        parse_rule_structure,
+    ))
+    .parse(input)
 }
 
 pub fn parse_directive(input: &str) -> IResult<&str, Directive> {

@@ -2,8 +2,6 @@ use crate::parser::ast::Expr;
 use crate::vm::ops::Op;
 
 pub struct Compiler {
-    // We map variable names to parameter indices.
-    // e.g. "x" -> 0, "y" -> 1
     param_map: Vec<String>,
 }
 
@@ -22,7 +20,9 @@ impl Compiler {
         match expr {
             Expr::Number(val) => ops.push(Op::Push(*val)),
             Expr::Variable(name) => {
-                if let Some(idx) = self.param_map.iter().position(|p| p == name) {
+                if name == "age" {
+                    ops.push(Op::LoadAge);
+                } else if let Some(idx) = self.param_map.iter().position(|p| p == name) {
                     ops.push(Op::LoadParam(idx as u16));
                 } else {
                     return Err(format!("Unknown parameter: {}", name));
@@ -57,7 +57,6 @@ impl Compiler {
                 self.compile_expr(val, ops)?;
                 ops.push(Op::Neg);
             }
-
             Expr::Eq(lhs, rhs) => {
                 self.compile_expr(lhs, ops)?;
                 self.compile_expr(rhs, ops)?;
@@ -88,7 +87,6 @@ impl Compiler {
                 self.compile_expr(rhs, ops)?;
                 ops.push(Op::Le);
             }
-
             Expr::And(lhs, rhs) => {
                 self.compile_expr(lhs, ops)?;
                 self.compile_expr(rhs, ops)?;
@@ -103,7 +101,6 @@ impl Compiler {
                 self.compile_expr(val, ops)?;
                 ops.push(Op::Not);
             }
-
             Expr::Call(_, _) => return Err("Function calls not yet supported in VM".to_string()),
         }
         Ok(())
