@@ -1,5 +1,7 @@
 use thiserror::Error;
 
+pub mod interner;
+
 #[derive(Error, Debug, PartialEq)]
 pub enum SymbiosError {
     #[error("Parameter count {0} exceeds limit {1}")]
@@ -54,12 +56,14 @@ impl SymbiosState {
     }
 
     pub fn push(&mut self, symbol: u16, parameters: &[f64]) -> Result<(), SymbiosError> {
-        if self.symbols.len() >= u32::MAX as usize - 1 {
+        if self.symbols.len() >= (u32::MAX as usize - 2) {
             return Err(SymbiosError::CapacityOverflow);
         }
-        if (self.params.len() + parameters.len()) >= u32::MAX as usize {
+        if (self.params.len() + parameters.len()) >= (u32::MAX as usize - 1) {
             return Err(SymbiosError::CapacityOverflow);
         }
+
+        // [FIX] Restored Missing Guard
         if parameters.len() > u16::MAX as usize {
             return Err(SymbiosError::ParameterOverflow(parameters.len(), u16::MAX));
         }
@@ -81,11 +85,9 @@ impl SymbiosState {
             return Err(SymbiosError::AmbiguousTopology);
         }
 
-        for (i, &sym) in self.symbols.iter().enumerate() {
-            if sym == open_sym || sym == close_sym {
-                self.topology[i] = u32::MAX;
-            }
-        }
+        // [FIX] Removed global wipe loop to allow multi-pass accumulation.
+        // Users must call clear() or manage state validity if re-using containers.
+        // This enables [ ] and { } to coexist.
 
         let mut stack = Vec::new();
         const MAX_NESTING: usize = 4096;

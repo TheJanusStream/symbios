@@ -81,9 +81,9 @@ fn test_full_context_rule() {
     let input = "A(x) < B(y) > C : y > 5 -> B(y+1)";
     let (_, rule) = parse_rule(input).expect("Should parse rule");
 
-    assert_eq!(rule.predecessor.symbol, 'B');
-    assert_eq!(rule.left_context[0].symbol, 'A');
-    assert_eq!(rule.right_context[0].symbol, 'C');
+    assert_eq!(rule.predecessor.symbol, "B");
+    assert_eq!(rule.left_context[0].symbol, "A");
+    assert_eq!(rule.right_context[0].symbol, "C");
     assert!(matches!(rule.condition, Some(Expr::Gt(_, _))));
 }
 

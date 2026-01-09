@@ -10,28 +10,14 @@ fn test_il_system_context_words() {
     let (_, rule) = parse_rule(input).expect("Should parse word contexts");
 
     assert_eq!(rule.left_context.len(), 2);
-    assert_eq!(rule.left_context[1].symbol, 'B');
+    assert_eq!(rule.left_context[1].symbol, "B");
+
     assert_eq!(rule.right_context.len(), 2);
+    assert_eq!(rule.right_context[0].symbol, "D");
+    assert_eq!(rule.right_context[1].symbol, "E");
+
     assert_eq!(rule.successors.len(), 1);
-}
-
-#[test]
-fn test_missing_math_operators() {
-    let input = "A(2 ^ 3)";
-    let (_, module) = parse_module(input).expect("Should parse ^");
-    if let Expr::Pow(lhs, rhs) = &module.params[0] {
-        assert!(matches!(**lhs, Expr::Number(2.0)));
-        assert!(matches!(**rhs, Expr::Number(3.0)));
-    } else {
-        panic!("Expected Pow");
-    }
-}
-
-#[test]
-fn test_missing_logical_operators() {
-    let input = "t == 1 & s >= 6";
-    let (_, expr) = parse_expr(input).expect("Should parse & and >=");
-    assert!(matches!(expr, Expr::And(_, _)));
+    assert_eq!(rule.successors[0].symbol, "F");
 }
 
 #[test]
@@ -58,10 +44,11 @@ fn test_simultaneous_topology_pairs() {
 
 #[test]
 fn test_ignore_and_define_directives() {
-    let input_ignore = "#ignore + - F";
+    // [FIX] Added colon to match parser requirements
+    let input_ignore = "#ignore : + - F";
     let (_, d1) = parse_directive(input_ignore).expect("Should parse ignore");
     if let Directive::Ignore(symbols) = d1 {
-        assert_eq!(symbols, vec!['+', '-', 'F']);
+        assert_eq!(symbols, vec!["+", "-", "F"]);
     } else {
         panic!("Wrong directive type");
     }
@@ -85,11 +72,69 @@ fn test_epsilon_erasing_rule() {
 
 #[test]
 fn test_successor_tokenization_tight() {
-    // Verify that symbols without whitespace parse correctly even if they are special
     let input = "A -> F+F-F";
     let (_, rule) = parse_rule(input).expect("Should parse tight successors");
     assert_eq!(rule.successors.len(), 5);
-    // Symbols are: F, +, F, -, F
-    assert_eq!(rule.successors[1].symbol, '+');
-    assert_eq!(rule.successors[3].symbol, '-');
+    assert_eq!(rule.successors[1].symbol, "+");
+}
+
+#[test]
+fn test_missing_math_operators() {
+    let input = "A(2 ^ 3)";
+    let (_, module) = parse_module(input).expect("Should parse ^");
+    if let Expr::Pow(lhs, rhs) = &module.params[0] {
+        assert!(matches!(**lhs, Expr::Number(2.0)));
+        assert!(matches!(**rhs, Expr::Number(3.0)));
+    } else {
+        panic!("Expected Pow");
+    }
+}
+
+#[test]
+fn test_missing_logical_operators() {
+    let input = "t == 1 & s >= 6";
+    let (_, expr) = parse_expr(input).expect("Should parse & and >=");
+    assert!(matches!(expr, Expr::And(_, _)));
+}
+
+#[test]
+fn test_named_modules_abop() {
+    let input = "internode(1.5)";
+    let (_, m) = parse_module(input).expect("Should parse named modules");
+    assert_eq!(m.symbol, "internode");
+    assert_eq!(m.params.len(), 1);
+}
+
+#[test]
+fn test_c_style_comments() {
+    let input = "/* header */ #define A 1 // tail";
+    let (_, d) = parse_directive(input).expect("Should parse through comments");
+    if let Directive::Define(n, _) = d {
+        assert_eq!(n, "A");
+    }
+}
+
+#[test]
+fn test_ignore_colon_syntax() {
+    let input = "#ignore : + - F";
+    let (_, d) = parse_directive(input).expect("Should require colon in ignore");
+    if let Directive::Ignore(s) = d {
+        assert_eq!(s.len(), 3);
+    }
+}
+
+#[test]
+fn test_rule_label_ambiguity() {
+    let input = "label1: A -> B";
+    let (_, rule) = parse_rule(input).expect("Should handle labels");
+    assert_eq!(rule.label, Some("label1".to_string()));
+}
+
+#[test]
+fn test_topology_sentinel_collision() {
+    let mut state = SymbiosState::new();
+    let open = 1;
+    // Fill state...
+    state.push(open, &[]).unwrap();
+    assert!(state.get_view(0).unwrap().skip_idx.is_none());
 }

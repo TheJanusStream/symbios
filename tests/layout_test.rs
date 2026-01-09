@@ -43,9 +43,15 @@ fn test_state_clearing() {
 #[test]
 fn test_param_overflow_safeguard() {
     let mut state = SymbiosState::new();
+    // 65536 is u16::MAX + 1
     let huge_params = vec![0.0; 65536];
     let res = state.push(1, &huge_params);
-    assert_eq!(res, Err(SymbiosError::ParameterOverflow(65536, u16::MAX)));
+
+    // Explicitly verify the error type and values
+    match res {
+        Err(SymbiosError::ParameterOverflow(65536, 65535)) => (),
+        _ => panic!("Expected ParameterOverflow(65536, 65535), got {:?}", res),
+    }
 }
 
 #[test]

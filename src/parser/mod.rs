@@ -4,8 +4,8 @@ use crate::parser::ast::{Directive, Expr, ModuleSym, Rule};
 use nom::{
     IResult, Parser,
     branch::alt,
-    bytes::complete::{tag, take_while_m_n},
-    character::complete::{char as c_char, multispace0, one_of},
+    bytes::complete::{is_not, tag, take_until, take_while_m_n},
+    character::complete::{char as c_char, multispace1, one_of},
     combinator::{cut, map, opt, peek, verify},
     error::{Error, ErrorKind, ParseError},
     multi::{many_till, many0},
@@ -21,11 +21,20 @@ const MAX_OP_CHAIN: usize = 64;
 
 // --- Lexical ---
 
+fn space_or_comment<'a, E: ParseError<&'a str>>(input: &'a str) -> IResult<&'a str, (), E> {
+    let comment = alt((
+        preceded(tag("/*"), terminated(take_until("*/"), tag("*/"))),
+        preceded(tag("//"), is_not("\n\r")),
+    ));
+    let mut p = many0(alt((map(multispace1, |_| ()), map(comment, |_| ()))));
+    p.parse(input).map(|(i, _)| (i, ()))
+}
+
 fn ws<'a, F, O, E: ParseError<&'a str>>(inner: F) -> impl Parser<&'a str, Output = O, Error = E>
 where
     F: Parser<&'a str, Output = O, Error = E>,
 {
-    delimited(multispace0, inner, multispace0)
+    delimited(space_or_comment, inner, space_or_comment)
 }
 
 fn is_ident_char(c: char) -> bool {
@@ -79,20 +88,62 @@ fn parse_atom(input: &str, depth: usize) -> IResult<&str, Expr> {
     .parse(input)
 }
 
-// 2. Power (Right-Assoc)
-fn parse_pow(input: &str, depth: usize) -> IResult<&str, Expr> {
-    let (input, lhs) = parse_atom(input, depth)?;
-    if let Ok((input, _)) = ws(c_char::<&str, Error<&str>>('^')).parse(input) {
-        let (input, rhs) = parse_pow(input, depth)?;
-        Ok((input, Expr::Pow(Box::new(lhs), Box::new(rhs))))
+fn parse_call_or_var(input: &str, depth: usize) -> IResult<&str, Expr> {
+    let (input, id) = identifier(input)?;
+    if let Ok((_, '(')) = peek(ws(c_char::<&str, Error<&str>>('('))).parse(input) {
+        let (input, args) = cut(|i| parse_arg_list(i, depth + 1)).parse(input)?;
+        Ok((input, Expr::Call(id, args)))
     } else {
-        Ok((input, lhs))
+        Ok((input, Expr::Variable(id)))
     }
+}
+
+fn parse_arg_list(input: &str, depth: usize) -> IResult<&str, Vec<Expr>> {
+    let (mut input, _) = ws(c_char('(')).parse(input)?;
+    let mut args = Vec::with_capacity(4);
+    loop {
+        if args.len() >= MAX_ARG_COUNT {
+            return Err(nom::Err::Failure(Error::from_error_kind(
+                input,
+                ErrorKind::TooLarge,
+            )));
+        }
+        if let Ok((next_input, expr)) = parse_expr_impl(input, depth) {
+            args.push(expr);
+            input = next_input;
+            if let Ok((next_input, _)) = ws(c_char::<&str, Error<&str>>(',')).parse(input) {
+                input = next_input;
+                continue;
+            }
+        }
+        break;
+    }
+    let (input, _) = ws(c_char(')')).parse(input)?;
+    Ok((input, args))
+}
+
+// 2. Power (^)
+fn parse_pow(input: &str, depth: usize) -> IResult<&str, Expr> {
+    let (mut input, mut acc) = parse_atom(input, depth)?;
+    let mut count = 0;
+    while let Ok((next, _)) = ws(c_char::<&str, Error<&str>>('^')).parse(input) {
+        count += 1;
+        if count > MAX_OP_CHAIN {
+            return Err(nom::Err::Failure(Error::from_error_kind(
+                next,
+                ErrorKind::TooLarge,
+            )));
+        }
+        // Right-associative: recurse for RHS
+        let (next, val) = parse_pow(next, depth)?;
+        acc = Expr::Pow(Box::new(acc), Box::new(val));
+        input = next;
+    }
+    Ok((input, acc))
 }
 
 // 3. Unary (!, -)
 fn parse_unary(input: &str, depth: usize) -> IResult<&str, Expr> {
-    // ABOP p.53: Power is higher than Unary. -(2^2)
     if let Ok((input, op)) = ws(one_of::<&str, &str, Error<&str>>("!-")).parse(input) {
         let (input, sub) = parse_pow(input, depth)?;
         let res = match op {
@@ -115,7 +166,7 @@ fn parse_mult(input: &str, depth: usize) -> IResult<&str, Expr> {
         count += 1;
         if count > MAX_OP_CHAIN {
             return Err(nom::Err::Failure(Error::from_error_kind(
-                input,
+                next,
                 ErrorKind::TooLarge,
             )));
         }
@@ -129,12 +180,11 @@ fn parse_mult(input: &str, depth: usize) -> IResult<&str, Expr> {
     Ok((input, acc))
 }
 
-// 5. Add (+, -). Calls Mult.
+// 5. Add (+, -)
 fn parse_add(input: &str, depth: usize) -> IResult<&str, Expr> {
     let (mut input, mut acc) = parse_mult(input, depth)?;
     let mut count = 0;
-    while let Ok((next_input, (op, val))) =
-        pair(ws(one_of("+-")), |i| parse_mult(i, depth)).parse(input)
+    while let Ok((next, (op, val))) = pair(ws(one_of("+-")), |i| parse_mult(i, depth)).parse(input)
     {
         count += 1;
         if count > MAX_OP_CHAIN {
@@ -148,12 +198,12 @@ fn parse_add(input: &str, depth: usize) -> IResult<&str, Expr> {
             '-' => Expr::Sub(Box::new(acc), Box::new(val)),
             _ => unreachable!(),
         };
-        input = next_input;
+        input = next;
     }
     Ok((input, acc))
 }
 
-// 6. Relational. Calls Add.
+// 6. Relational
 fn parse_rel(input: &str, depth: usize) -> IResult<&str, Expr> {
     let (input, lhs) = parse_add(input, depth)?;
     let op_parser = alt((
@@ -181,7 +231,7 @@ fn parse_rel(input: &str, depth: usize) -> IResult<&str, Expr> {
     }
 }
 
-// 7. Logical (Lowest) - Entry Point
+// 7. Logical (&, |)
 fn parse_expr_impl(input: &str, depth: usize) -> IResult<&str, Expr> {
     let (mut input, mut acc) = parse_rel(input, depth)?;
     let mut count = 0;
@@ -189,7 +239,7 @@ fn parse_expr_impl(input: &str, depth: usize) -> IResult<&str, Expr> {
         count += 1;
         if count > MAX_OP_CHAIN {
             return Err(nom::Err::Failure(Error::from_error_kind(
-                input,
+                next,
                 ErrorKind::TooLarge,
             )));
         }
@@ -203,48 +253,14 @@ fn parse_expr_impl(input: &str, depth: usize) -> IResult<&str, Expr> {
     Ok((input, acc))
 }
 
-fn parse_call_or_var(input: &str, depth: usize) -> IResult<&str, Expr> {
-    let (input, id) = identifier(input)?;
-    if let Ok((_, '(')) = peek(ws(c_char::<&str, Error<&str>>('('))).parse(input) {
-        let (input, args) = cut(|i| parse_arg_list(i, depth + 1)).parse(input)?;
-        Ok((input, Expr::Call(id, args)))
-    } else {
-        Ok((input, Expr::Variable(id)))
-    }
-}
-
-fn parse_arg_list(input: &str, depth: usize) -> IResult<&str, Vec<Expr>> {
-    let (mut input, _) = ws(c_char::<&str, Error<&str>>('(')).parse(input)?;
-    let mut args = Vec::with_capacity(4);
-    loop {
-        if args.len() >= MAX_ARG_COUNT {
-            return Err(nom::Err::Failure(Error::from_error_kind(
-                input,
-                ErrorKind::TooLarge,
-            )));
-        }
-        if let Ok((next_input, expr)) = parse_expr_impl(input, depth) {
-            args.push(expr);
-            input = next_input;
-            if let Ok((next_input, _)) = ws(c_char::<&str, Error<&str>>(',')).parse(input) {
-                input = next_input;
-                continue;
-            }
-        }
-        break;
-    }
-    let (input, _) = ws(c_char::<&str, Error<&str>>(')')).parse(input)?;
-    Ok((input, args))
-}
-
 pub fn parse_expr(input: &str) -> IResult<&str, Expr> {
     parse_expr_impl(input, 0)
 }
 
 // --- L-System Grammar ---
 
-fn parse_symbol(input: &str) -> IResult<&str, char> {
-    one_of("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz+-/&^[]|\\!$%")(input)
+fn parse_symbol(input: &str) -> IResult<&str, String> {
+    alt((identifier, map(one_of("+-/&^[]|\\!$%"), |c| c.to_string()))).parse(input)
 }
 
 pub fn parse_module(input: &str) -> IResult<&str, ModuleSym> {
@@ -282,19 +298,27 @@ pub fn parse_rule(input: &str) -> IResult<&str, Rule> {
         input = next;
     }
 
+    if probability < 0.0 || probability > 1.0 {
+        return Err(nom::Err::Failure(Error::from_error_kind(
+            input,
+            ErrorKind::Verify,
+        )));
+    }
+
     let (input, left_context) = if let Ok((next, (lc, _))) = many_till::<&str, Error<&str>, _, _>(
         ws(parse_module),
         peek(ws(c_char::<&str, Error<&str>>('<'))),
     )
     .parse(input)
     {
-        let (next, _) = ws(c_char('<')).parse(next)?;
+        let (next, _) = ws(c_char::<&str, Error<&str>>('<')).parse(next)?;
         (next, lc)
     } else {
         (input, Vec::new())
     };
 
-    let (input, predecessor) = parse_module(input)?;
+    // Explicit ws() wrap for Predecessor to handle leading space
+    let (input, predecessor) = ws(parse_module).parse(input)?;
 
     let (input, right_context) =
         if let Ok((next, _)) = ws(c_char::<&str, Error<&str>>('>')).parse(input) {
@@ -316,7 +340,7 @@ pub fn parse_rule(input: &str) -> IResult<&str, Rule> {
     let mut successors = Vec::new();
     let mut curr = input;
     loop {
-        let (next, _) = multispace0::<&str, Error<&str>>(curr)?;
+        let (next, _) = space_or_comment(curr)?;
         if successors.len() >= MAX_SUCCESSORS {
             return Err(nom::Err::Failure(Error::from_error_kind(
                 next,
@@ -330,6 +354,7 @@ pub fn parse_rule(input: &str) -> IResult<&str, Rule> {
             break;
         }
     }
+
     Ok((
         curr,
         Rule {
@@ -350,16 +375,13 @@ pub fn parse_directive(input: &str) -> IResult<&str, Directive> {
         alt((
             map(
                 preceded(
-                    tag::<&str, &str, Error<&str>>("ignore"),
+                    pair(tag("ignore"), ws(c_char(':'))),
                     many0(ws(parse_symbol)),
                 ),
                 Directive::Ignore,
             ),
             map(
-                preceded(
-                    tag::<&str, &str, Error<&str>>("define"),
-                    pair(ws(identifier), parse_expr),
-                ),
+                preceded(tag("define"), pair(ws(identifier), parse_expr)),
                 |(name, expr)| Directive::Define(name, expr),
             ),
         )),

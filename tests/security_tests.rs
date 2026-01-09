@@ -4,9 +4,9 @@ use symbios::{SymbiosState, core::SymbiosError};
 #[test]
 fn test_3d_symbols() {
     let (_, m) = parse_module("\\(90)").expect("Should parse roll");
-    assert_eq!(m.symbol, '\\');
+    assert_eq!(m.symbol, "\\");
     let (_, m) = parse_module("!(5)").expect("Should parse width");
-    assert_eq!(m.symbol, '!');
+    assert_eq!(m.symbol, "!");
 }
 
 #[test]
