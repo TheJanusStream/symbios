@@ -12,7 +12,6 @@ fn float_eq(a: f64, b: f64) -> bool {
     let diff = (a - b).abs();
     let abs_a = a.abs();
     let abs_b = b.abs();
-    // Compare relative to the magnitude of the operands
     diff / (abs_a + abs_b).min(f64::MAX) < 1e-10
 }
 
@@ -22,6 +21,8 @@ pub struct VirtualMachine {
 }
 
 impl VirtualMachine {
+    const MAX_STACK_SIZE: usize = 256;
+
     pub fn new() -> Self {
         Self {
             stack: Vec::with_capacity(64),
@@ -32,6 +33,10 @@ impl VirtualMachine {
         self.stack.clear();
 
         for op in code {
+            if self.stack.len() > Self::MAX_STACK_SIZE {
+                return Err("Stack overflow".into());
+            }
+
             match op {
                 Op::Push(val) => self.stack.push(*val),
                 Op::LoadParam(idx) => {
@@ -49,12 +54,12 @@ impl VirtualMachine {
                     let a = self.pop()?;
                     self.stack.push(-a);
                 }
-                Op::Eq => self.binary_op(|a, b| if float_eq(a, b) { 1.0 } else { 0.0 })?,
-                Op::Ne => self.binary_op(|a, b| if !float_eq(a, b) { 1.0 } else { 0.0 })?,
-                Op::Gt => self.binary_op(|a, b| if a > b { 1.0 } else { 0.0 })?,
-                Op::Lt => self.binary_op(|a, b| if a < b { 1.0 } else { 0.0 })?,
-                Op::Ge => self.binary_op(|a, b| if a >= b { 1.0 } else { 0.0 })?,
-                Op::Le => self.binary_op(|a, b| if a <= b { 1.0 } else { 0.0 })?,
+                Op::Eq => self.compare_op(|a, b| float_eq(a, b))?,
+                Op::Ne => self.compare_op(|a, b| !float_eq(a, b))?,
+                Op::Gt => self.compare_op(|a, b| a > b)?,
+                Op::Lt => self.compare_op(|a, b| a < b)?,
+                Op::Ge => self.compare_op(|a, b| a >= b)?,
+                Op::Le => self.compare_op(|a, b| a <= b)?,
                 Op::And => self.binary_op(|a, b| if a != 0.0 && b != 0.0 { 1.0 } else { 0.0 })?,
                 Op::Or => self.binary_op(|a, b| if a != 0.0 || b != 0.0 { 1.0 } else { 0.0 })?,
                 Op::Not => {
@@ -64,10 +69,11 @@ impl VirtualMachine {
             }
         }
 
-        self.stack
-            .last()
-            .copied()
-            .ok_or("Empty stack result".to_string())
+        let res = self.stack.last().copied().ok_or("Empty stack result")?;
+        if res.is_nan() {
+            return Err("VM Runtime Error: Operation resulted in NaN".into());
+        }
+        Ok(res)
     }
 
     fn pop(&mut self) -> Result<f64, String> {
@@ -81,6 +87,17 @@ impl VirtualMachine {
         let b = self.pop()?;
         let a = self.pop()?;
         self.stack.push(f(a, b));
+        Ok(())
+    }
+
+    fn compare_op<F>(&mut self, f: F) -> Result<(), String>
+    where
+        F: FnOnce(f64, f64) -> bool,
+    {
+        let b = self.pop()?;
+        let a = self.pop()?;
+        // IEEE-754: Comparisons with NaN are False. No longer erroring.
+        self.stack.push(if f(a, b) { 1.0 } else { 0.0 });
         Ok(())
     }
 }

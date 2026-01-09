@@ -1,5 +1,4 @@
 use thiserror::Error;
-
 pub mod interner;
 
 #[derive(Error, Debug, PartialEq)]
@@ -8,7 +7,7 @@ pub enum SymbiosError {
     ParameterOverflow(usize, u16),
     #[error("Unmatched bracket at index {0}")]
     UnmatchedBracket(usize),
-    #[error("Ambiguous topology symbols: open and close are identical")]
+    #[error("Ambiguous topology symbols")]
     AmbiguousTopology,
     #[error("Max nesting depth exceeded")]
     MaxNestingExceeded,
@@ -16,56 +15,64 @@ pub enum SymbiosError {
     CapacityOverflow,
 }
 
+#[derive(Debug, Clone)]
+struct ModuleData {
+    symbol: u16,
+    birth_time: f64, // Absolute time for O(1) advance_time
+    param_start: u32,
+    param_len: u16,
+    topology_link: u32,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct SymbiosState {
-    symbols: Vec<u16>,
-    birth_times: Vec<f64>,
+    modules: Vec<ModuleData>,
     params: Vec<f64>,
-    topology: Vec<u32>,
-    offsets: Vec<u32>,
-    lengths: Vec<u16>,
     pub current_time: f64,
 }
 
 impl SymbiosState {
+    const NO_LINK: u32 = u32::MAX;
+
     pub fn new() -> Self {
         Self::default()
     }
 
     pub fn clear(&mut self) {
-        self.symbols.clear();
-        self.birth_times.clear();
+        self.modules.clear();
         self.params.clear();
-        self.topology.clear();
-        self.offsets.clear();
-        self.lengths.clear();
         self.current_time = 0.0;
     }
 
     pub fn len(&self) -> usize {
-        self.symbols.len()
+        self.modules.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.symbols.is_empty()
+        self.modules.is_empty()
     }
 
     pub fn push(&mut self, symbol: u16, age: f64, parameters: &[f64]) -> Result<(), SymbiosError> {
-        const SAFE_LIMIT: usize = (u32::MAX as usize) - 1024;
-        if self.symbols.len() >= SAFE_LIMIT || (self.params.len() + parameters.len()) >= SAFE_LIMIT
+        if self.modules.len() >= (u32::MAX as usize - 1)
+            || (self.params.len() + parameters.len()) >= (u32::MAX as usize - 1)
         {
             return Err(SymbiosError::CapacityOverflow);
         }
+
         if parameters.len() > u16::MAX as usize {
             return Err(SymbiosError::ParameterOverflow(parameters.len(), u16::MAX));
         }
 
-        self.symbols.push(symbol);
-        self.birth_times.push(self.current_time - age);
-        self.offsets.push(self.params.len() as u32);
-        self.lengths.push(parameters.len() as u16);
+        let param_start = self.params.len() as u32;
         self.params.extend_from_slice(parameters);
-        self.topology.push(u32::MAX);
+
+        self.modules.push(ModuleData {
+            symbol,
+            birth_time: self.current_time - age,
+            param_start,
+            param_len: parameters.len() as u16,
+            topology_link: Self::NO_LINK,
+        });
         Ok(())
     }
 
@@ -78,18 +85,17 @@ impl SymbiosState {
             return Err(SymbiosError::AmbiguousTopology);
         }
         let mut stack = Vec::new();
-        const MAX_NESTING: usize = 4096;
-
-        for (i, &sym) in self.symbols.iter().enumerate() {
+        for i in 0..self.modules.len() {
+            let sym = self.modules[i].symbol;
             if sym == open_sym {
-                if stack.len() >= MAX_NESTING {
+                if stack.len() >= 4096 {
                     return Err(SymbiosError::MaxNestingExceeded);
                 }
                 stack.push(i as u32);
             } else if sym == close_sym {
-                if let Some(start_idx) = stack.pop() {
-                    self.topology[start_idx as usize] = i as u32;
-                    self.topology[i] = start_idx;
+                if let Some(si) = stack.pop() {
+                    self.modules[si as usize].topology_link = i as u32;
+                    self.modules[i].topology_link = si;
                 } else {
                     return Err(SymbiosError::UnmatchedBracket(i));
                 }
@@ -102,21 +108,20 @@ impl SymbiosState {
     }
 
     pub fn get_view(&self, index: usize) -> Option<ModuleView<'_>> {
-        if index >= self.symbols.len() {
-            return None;
-        }
-        let start = self.offsets[index] as usize;
-        let len = self.lengths[index] as usize;
-        let skip = match self.topology[index] {
-            u32::MAX => None,
-            val if (val as usize) < self.symbols.len() => Some(val as usize),
-            _ => None,
+        let m = self.modules.get(index)?;
+        let start = m.param_start as usize;
+        let end = start + (m.param_len as usize);
+
+        let skip = if m.topology_link == Self::NO_LINK {
+            None
+        } else {
+            Some(m.topology_link as usize)
         };
 
         Some(ModuleView {
-            sym: self.symbols[index],
-            age: self.current_time - self.birth_times[index],
-            params: &self.params[start..start + len],
+            sym: m.symbol,
+            age: self.current_time - m.birth_time,
+            params: &self.params[start..end],
             skip_idx: skip,
         })
     }

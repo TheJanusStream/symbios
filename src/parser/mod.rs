@@ -1,3 +1,4 @@
+/* src/parser/mod.rs */
 pub mod ast;
 
 use crate::parser::ast::{Directive, Expr, ModuleSym, Rule};
@@ -9,15 +10,14 @@ use nom::{
     combinator::{cut, map, opt, peek, verify},
     error::{Error, ErrorKind, ParseError},
     multi::{many_till, many0},
+    number::complete::double,
     sequence::{delimited, pair, preceded, terminated},
 };
 
 const MAX_RECURSION_DEPTH: usize = 64;
 const MAX_IDENTIFIER_LEN: usize = 64;
 const MAX_ARG_COUNT: usize = 32;
-const MAX_FLOAT_LEN: usize = 32;
 const MAX_SUCCESSORS: usize = 128;
-const MAX_OP_CHAIN: usize = 64;
 
 // --- Lexical ---
 
@@ -58,38 +58,156 @@ fn identifier(input: &str) -> IResult<&str, String> {
 }
 
 fn finite_float(input: &str) -> IResult<&str, f64> {
-    let (input, float_str) = verify(
-        take_while_m_n(1, MAX_FLOAT_LEN, |c: char| {
-            c.is_ascii_digit() || c == '.' || c == '-' || c == '+' || c == 'e' || c == 'E'
-        }),
-        |s: &str| !s.is_empty(),
-    )
-    .parse(input)?;
-    let (_, val) =
-        verify(nom::number::complete::double, |x: &f64| x.is_finite()).parse(float_str)?;
+    let (input, val) = verify(double, |x: &f64| x.is_finite()).parse(input)?;
     Ok((input, val))
 }
 
 // --- Expressions ---
 
-// 1. Atom (Highest)
+pub fn parse_expr(input: &str) -> IResult<&str, Expr> {
+    ws(|i| parse_expr_impl(i, 0)).parse(input)
+}
+
+fn parse_expr_impl(input: &str, depth: usize) -> IResult<&str, Expr> {
+    parse_logical_or(input, depth)
+}
+
+fn parse_logical_or(input: &str, depth: usize) -> IResult<&str, Expr> {
+    let (mut input, mut acc) = parse_logical_and(input, depth)?;
+    while let Ok((next, _)) = ws(c_char::<&str, Error<&str>>('|')).parse(input) {
+        let (next, rhs) = parse_logical_and(next, depth)?;
+        acc = Expr::Or(Box::new(acc), Box::new(rhs));
+        input = next;
+    }
+    Ok((input, acc))
+}
+
+fn parse_logical_and(input: &str, depth: usize) -> IResult<&str, Expr> {
+    let (mut input, mut acc) = parse_relational(input, depth)?;
+    while let Ok((next, _)) = ws(c_char::<&str, Error<&str>>('&')).parse(input) {
+        let (next, rhs) = parse_relational(next, depth)?;
+        acc = Expr::And(Box::new(acc), Box::new(rhs));
+        input = next;
+    }
+    Ok((input, acc))
+}
+
+fn parse_relational(input: &str, depth: usize) -> IResult<&str, Expr> {
+    let (input, lhs) = parse_addition(input, depth)?;
+    let op_parser = alt((
+        tag::<&str, &str, Error<&str>>("=="),
+        tag::<&str, &str, Error<&str>>("!="),
+        tag::<&str, &str, Error<&str>>("<="),
+        tag::<&str, &str, Error<&str>>(">="),
+        tag::<&str, &str, Error<&str>>("<"),
+        tag::<&str, &str, Error<&str>>(">"),
+    ));
+    if let Ok((input, op)) = ws(op_parser).parse(input) {
+        let (input, rhs) = parse_addition(input, depth)?;
+        let res = match op {
+            "==" => Expr::Eq(Box::new(lhs), Box::new(rhs)),
+            "!=" => Expr::Ne(Box::new(lhs), Box::new(rhs)),
+            "<=" => Expr::Le(Box::new(lhs), Box::new(rhs)),
+            ">=" => Expr::Ge(Box::new(lhs), Box::new(rhs)),
+            "<" => Expr::Lt(Box::new(lhs), Box::new(rhs)),
+            ">" => Expr::Gt(Box::new(lhs), Box::new(rhs)),
+            _ => unreachable!(),
+        };
+        Ok((input, res))
+    } else {
+        Ok((input, lhs))
+    }
+}
+
+fn parse_addition(input: &str, depth: usize) -> IResult<&str, Expr> {
+    let (mut input, mut acc) = parse_multiplication(input, depth)?;
+
+    // [FIX] Guard against consuming the '-' in '->'
+    // We match + or -, but ONLY if not followed by >
+    loop {
+        // Peek to see if we have an operator
+        let parse_op = ws(one_of::<&str, &str, Error<&str>>("+-"));
+        let mut check = peek(pair(parse_op, opt(c_char('>'))));
+
+        match check.parse(input) {
+            Ok((_, (op_char, maybe_gt))) => {
+                if op_char == '-' && maybe_gt == Some('>') {
+                    // It is an arrow '->', break loop to let rule parser handle it
+                    break;
+                }
+
+                // Safe to consume
+                let (next, op) = ws(one_of("+-")).parse(input)?;
+                let (next, rhs) = parse_multiplication(next, depth)?;
+                acc = match op {
+                    '+' => Expr::Add(Box::new(acc), Box::new(rhs)),
+                    '-' => Expr::Sub(Box::new(acc), Box::new(rhs)),
+                    _ => unreachable!(),
+                };
+                input = next;
+            }
+            Err(_) => break, // No operator
+        }
+    }
+    Ok((input, acc))
+}
+
+fn parse_multiplication(input: &str, depth: usize) -> IResult<&str, Expr> {
+    let (mut input, mut acc) = parse_unary(input, depth)?;
+    while let Ok((next, op)) = ws(one_of::<&str, &str, Error<&str>>("*/")).parse(input) {
+        let (next, rhs) = parse_unary(next, depth)?;
+        acc = match op {
+            '*' => Expr::Mul(Box::new(acc), Box::new(rhs)),
+            '/' => Expr::Div(Box::new(acc), Box::new(rhs)),
+            _ => unreachable!(),
+        };
+        input = next;
+    }
+    Ok((input, acc))
+}
+
+fn parse_unary(input: &str, depth: usize) -> IResult<&str, Expr> {
+    if let Ok((input, op)) = ws(one_of::<&str, &str, Error<&str>>("!-")).parse(input) {
+        let (input, sub) = parse_pow(input, depth)?;
+        let res = match op {
+            '!' => Expr::Not(Box::new(sub)),
+            '-' => Expr::Neg(Box::new(sub)),
+            _ => unreachable!(),
+        };
+        Ok((input, res))
+    } else {
+        parse_pow(input, depth)
+    }
+}
+
+fn parse_pow(input: &str, depth: usize) -> IResult<&str, Expr> {
+    let (mut input, mut acc) = parse_atom(input, depth)?;
+    while let Ok((next, _)) = ws(c_char::<&str, Error<&str>>('^')).parse(input) {
+        let (next, val) = parse_pow(next, depth + 1)?;
+        acc = Expr::Pow(Box::new(acc), Box::new(val));
+        input = next;
+    }
+    Ok((input, acc))
+}
+
 fn parse_atom(input: &str, depth: usize) -> IResult<&str, Expr> {
     if depth > MAX_RECURSION_DEPTH {
-        return Err(nom::Err::Failure(Error::from_error_kind(
-            input,
-            ErrorKind::TooLarge,
-        )));
+        return Err(nom::Err::Failure(Error::new(input, ErrorKind::TooLarge)));
     }
     alt((
-        map(finite_float, Expr::Number),
-        |i| parse_call_or_var(i, depth),
-        delimited(c_char('('), |i| parse_expr_impl(i, depth + 1), c_char(')')),
+        map(ws(finite_float), Expr::Number),
+        |i| parse_call_or_var_at_depth(i, depth),
+        ws(delimited(
+            c_char('('),
+            |i| parse_expr_impl(i, depth + 1),
+            c_char(')'),
+        )),
     ))
     .parse(input)
 }
 
-fn parse_call_or_var(input: &str, depth: usize) -> IResult<&str, Expr> {
-    let (input, id) = identifier(input)?;
+fn parse_call_or_var_at_depth(input: &str, depth: usize) -> IResult<&str, Expr> {
+    let (input, id) = ws(identifier).parse(input)?;
     if let Ok((_, '(')) = peek(ws(c_char::<&str, Error<&str>>('('))).parse(input) {
         let (input, args) = cut(|i| parse_arg_list(i, depth + 1)).parse(input)?;
         Ok((input, Expr::Call(id, args)))
@@ -100,7 +218,7 @@ fn parse_call_or_var(input: &str, depth: usize) -> IResult<&str, Expr> {
 
 fn parse_arg_list(input: &str, depth: usize) -> IResult<&str, Vec<Expr>> {
     let (mut input, _) = ws(c_char('(')).parse(input)?;
-    let mut args = Vec::with_capacity(4);
+    let mut args = Vec::new();
     loop {
         if args.len() >= MAX_ARG_COUNT {
             return Err(nom::Err::Failure(Error::from_error_kind(
@@ -122,141 +240,6 @@ fn parse_arg_list(input: &str, depth: usize) -> IResult<&str, Vec<Expr>> {
     Ok((input, args))
 }
 
-// 2. Power (^)
-fn parse_pow(input: &str, depth: usize) -> IResult<&str, Expr> {
-    let (mut input, mut acc) = parse_atom(input, depth)?;
-    let mut count = 0;
-    while let Ok((next, _)) = ws(c_char::<&str, Error<&str>>('^')).parse(input) {
-        count += 1;
-        if count > MAX_OP_CHAIN {
-            return Err(nom::Err::Failure(Error::from_error_kind(
-                next,
-                ErrorKind::TooLarge,
-            )));
-        }
-        // Right-associative: recurse for RHS
-        let (next, val) = parse_pow(next, depth)?;
-        acc = Expr::Pow(Box::new(acc), Box::new(val));
-        input = next;
-    }
-    Ok((input, acc))
-}
-
-// 3. Unary (!, -)
-fn parse_unary(input: &str, depth: usize) -> IResult<&str, Expr> {
-    if let Ok((input, op)) = ws(one_of::<&str, &str, Error<&str>>("!-")).parse(input) {
-        let (input, sub) = parse_pow(input, depth)?;
-        let res = match op {
-            '!' => Expr::Not(Box::new(sub)),
-            '-' => Expr::Neg(Box::new(sub)),
-            _ => unreachable!(),
-        };
-        Ok((input, res))
-    } else {
-        parse_pow(input, depth)
-    }
-}
-
-// 4. Mult (*, /)
-fn parse_mult(input: &str, depth: usize) -> IResult<&str, Expr> {
-    let (mut input, mut acc) = parse_unary(input, depth)?;
-    let mut count = 0;
-    while let Ok((next, (op, val))) = pair(ws(one_of("*/")), |i| parse_unary(i, depth)).parse(input)
-    {
-        count += 1;
-        if count > MAX_OP_CHAIN {
-            return Err(nom::Err::Failure(Error::from_error_kind(
-                next,
-                ErrorKind::TooLarge,
-            )));
-        }
-        acc = match op {
-            '*' => Expr::Mul(Box::new(acc), Box::new(val)),
-            '/' => Expr::Div(Box::new(acc), Box::new(val)),
-            _ => unreachable!(),
-        };
-        input = next;
-    }
-    Ok((input, acc))
-}
-
-// 5. Add (+, -)
-fn parse_add(input: &str, depth: usize) -> IResult<&str, Expr> {
-    let (mut input, mut acc) = parse_mult(input, depth)?;
-    let mut count = 0;
-    while let Ok((next, (op, val))) = pair(ws(one_of("+-")), |i| parse_mult(i, depth)).parse(input)
-    {
-        count += 1;
-        if count > MAX_OP_CHAIN {
-            return Err(nom::Err::Failure(Error::from_error_kind(
-                input,
-                ErrorKind::TooLarge,
-            )));
-        }
-        acc = match op {
-            '+' => Expr::Add(Box::new(acc), Box::new(val)),
-            '-' => Expr::Sub(Box::new(acc), Box::new(val)),
-            _ => unreachable!(),
-        };
-        input = next;
-    }
-    Ok((input, acc))
-}
-
-// 6. Relational
-fn parse_rel(input: &str, depth: usize) -> IResult<&str, Expr> {
-    let (input, lhs) = parse_add(input, depth)?;
-    let op_parser = alt((
-        tag::<&str, &str, Error<&str>>("=="),
-        tag::<&str, &str, Error<&str>>("!="),
-        tag::<&str, &str, Error<&str>>("<="),
-        tag::<&str, &str, Error<&str>>(">="),
-        tag::<&str, &str, Error<&str>>("<"),
-        tag::<&str, &str, Error<&str>>(">"),
-    ));
-    if let Ok((input, op)) = ws(op_parser).parse(input) {
-        let (input, rhs) = parse_add(input, depth)?;
-        let res = match op {
-            "==" => Expr::Eq(Box::new(lhs), Box::new(rhs)),
-            "!=" => Expr::Ne(Box::new(lhs), Box::new(rhs)),
-            "<=" => Expr::Le(Box::new(lhs), Box::new(rhs)),
-            ">=" => Expr::Ge(Box::new(lhs), Box::new(rhs)),
-            "<" => Expr::Lt(Box::new(lhs), Box::new(rhs)),
-            ">" => Expr::Gt(Box::new(lhs), Box::new(rhs)),
-            _ => unreachable!(),
-        };
-        Ok((input, res))
-    } else {
-        Ok((input, lhs))
-    }
-}
-
-// 7. Logical (&, |)
-fn parse_expr_impl(input: &str, depth: usize) -> IResult<&str, Expr> {
-    let (mut input, mut acc) = parse_rel(input, depth)?;
-    let mut count = 0;
-    while let Ok((next, (op, val))) = pair(ws(one_of("&|")), |i| parse_rel(i, depth)).parse(input) {
-        count += 1;
-        if count > MAX_OP_CHAIN {
-            return Err(nom::Err::Failure(Error::from_error_kind(
-                next,
-                ErrorKind::TooLarge,
-            )));
-        }
-        acc = match op {
-            '&' => Expr::And(Box::new(acc), Box::new(val)),
-            '|' => Expr::Or(Box::new(acc), Box::new(val)),
-            _ => unreachable!(),
-        };
-        input = next;
-    }
-    Ok((input, acc))
-}
-
-pub fn parse_expr(input: &str) -> IResult<&str, Expr> {
-    parse_expr_impl(input, 0)
-}
-
 // --- L-System Grammar ---
 
 fn parse_symbol(input: &str) -> IResult<&str, String> {
@@ -264,10 +247,14 @@ fn parse_symbol(input: &str) -> IResult<&str, String> {
 }
 
 pub fn parse_module(input: &str) -> IResult<&str, ModuleSym> {
-    let (input, symbol) = parse_symbol(input)?;
+    ws(|i| parse_module_impl(i, 0)).parse(input)
+}
+
+fn parse_module_impl(input: &str, depth: usize) -> IResult<&str, ModuleSym> {
+    let (input, symbol) = ws(parse_symbol).parse(input)?;
     let (input, params) =
         if let Ok((_, '(')) = peek(ws(c_char::<&str, Error<&str>>('('))).parse(input) {
-            let (input, args) = cut(|i| parse_arg_list(i, 0)).parse(input)?;
+            let (input, args) = cut(|i| parse_arg_list(i, depth + 1)).parse(input)?;
             (input, Some(args))
         } else {
             (input, None)
@@ -286,23 +273,17 @@ pub fn parse_rule(input: &str) -> IResult<&str, Rule> {
     let mut probability = 1.0;
     let mut input = input;
 
-    if let Ok((next, l)) = terminated(identifier, ws(c_char::<&str, Error<&str>>(':'))).parse(input)
+    if let Ok((next, l)) =
+        terminated(ws(identifier), ws(c_char::<&str, Error<&str>>(':'))).parse(input)
     {
         label = Some(l);
         input = next;
     }
     if let Ok((next, p)) =
-        terminated(finite_float, ws(c_char::<&str, Error<&str>>(':'))).parse(input)
+        terminated(ws(finite_float), ws(c_char::<&str, Error<&str>>(':'))).parse(input)
     {
         probability = p;
         input = next;
-    }
-
-    if probability < 0.0 || probability > 1.0 {
-        return Err(nom::Err::Failure(Error::from_error_kind(
-            input,
-            ErrorKind::Verify,
-        )));
     }
 
     let (input, left_context) = if let Ok((next, (lc, _))) = many_till::<&str, Error<&str>, _, _>(
@@ -311,21 +292,17 @@ pub fn parse_rule(input: &str) -> IResult<&str, Rule> {
     )
     .parse(input)
     {
-        let (next, _) = ws(c_char::<&str, Error<&str>>('<')).parse(next)?;
+        let (next, _) = ws(c_char('<')).parse(next)?;
         (next, lc)
     } else {
         (input, Vec::new())
     };
 
-    // Explicit ws() wrap for Predecessor to handle leading space
     let (input, predecessor) = ws(parse_module).parse(input)?;
 
     let (input, right_context) =
         if let Ok((next, _)) = ws(c_char::<&str, Error<&str>>('>')).parse(input) {
-            let term = alt((
-                map(ws(c_char::<&str, Error<&str>>(':')), |_| ()),
-                map(ws(tag::<&str, &str, Error<&str>>("->")), |_| ()),
-            ));
+            let term = alt((map(ws(c_char(':')), |_| ()), map(ws(tag("->")), |_| ())));
             let (next, (rc, _)) =
                 many_till::<&str, Error<&str>, _, _>(ws(parse_module), peek(term)).parse(next)?;
             (next, rc)
@@ -333,9 +310,9 @@ pub fn parse_rule(input: &str) -> IResult<&str, Rule> {
             (input, Vec::new())
         };
 
-    let (input, condition) =
-        opt(preceded(ws(c_char::<&str, Error<&str>>(':')), parse_expr)).parse(input)?;
-    let (input, _) = ws(tag::<&str, &str, Error<&str>>("->")).parse(input)?;
+    let (input, condition) = opt(preceded(ws(c_char(':')), parse_expr)).parse(input)?;
+
+    let (input, _) = ws(tag("->")).parse(input)?;
 
     let mut successors = Vec::new();
     let mut curr = input;
@@ -371,7 +348,7 @@ pub fn parse_rule(input: &str) -> IResult<&str, Rule> {
 
 pub fn parse_directive(input: &str) -> IResult<&str, Directive> {
     preceded(
-        ws(c_char::<&str, Error<&str>>('#')),
+        ws(c_char('#')),
         alt((
             map(
                 preceded(

@@ -1,3 +1,5 @@
+use nom::error::ErrorKind;
+use symbios::parser;
 use symbios::parser::{ast::Expr, parse_module, parse_rule};
 
 #[test]
@@ -88,16 +90,6 @@ fn test_full_context_rule() {
 }
 
 #[test]
-fn test_op_chain_limit_enforcement() {
-    let mut long_expr = "1".to_string();
-    for _ in 0..100 {
-        long_expr.push_str(" + 1");
-    }
-    let input = format!("A({})", long_expr);
-    assert!(parse_module(&input).is_err());
-}
-
-#[test]
 fn test_valid_op_chain() {
     let mut long_expr = "1".to_string();
     for _ in 0..50 {
@@ -105,4 +97,38 @@ fn test_valid_op_chain() {
     }
     let input = format!("A({})", long_expr);
     assert!(parse_module(&input).is_ok());
+}
+
+#[test]
+fn test_recursion_depth_limit() {
+    // Generate nesting deeper than MAX_RECURSION_DEPTH (64)
+    let mut input = "1".to_string();
+    for _ in 0..70 {
+        input = format!("({})", input);
+    }
+
+    let result = parser::parse_expr(&input);
+
+    match result {
+        Err(nom::Err::Failure(e)) | Err(nom::Err::Error(e)) => {
+            assert_eq!(e.code, ErrorKind::TooLarge);
+        }
+        Ok(_) => panic!("Parser should have rejected deep nesting"),
+        _ => panic!("Unexpected error type"),
+    }
+}
+
+#[test]
+fn test_iterative_long_chain() {
+    // 100 operators should PASS in an iterative parser (Stack Safety Check)
+    let mut input = "1".to_string();
+    for _ in 0..100 {
+        input.push_str(" + 1");
+    }
+
+    let result = parser::parse_expr(&input);
+    assert!(
+        result.is_ok(),
+        "Iterative parser should handle long flat chains"
+    );
 }
