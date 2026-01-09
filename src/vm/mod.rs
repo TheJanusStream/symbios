@@ -4,6 +4,18 @@ pub mod ops;
 pub use compiler::Compiler;
 pub use ops::Op;
 
+/// Hardened Float Equality: Handles scale variance using relative epsilon.
+fn float_eq(a: f64, b: f64) -> bool {
+    if a == b {
+        return true;
+    }
+    let diff = (a - b).abs();
+    let abs_a = a.abs();
+    let abs_b = b.abs();
+    // Compare relative to the magnitude of the operands
+    diff / (abs_a + abs_b).min(f64::MAX) < 1e-10
+}
+
 #[derive(Debug, Default)]
 pub struct VirtualMachine {
     stack: Vec<f64>,
@@ -16,8 +28,6 @@ impl VirtualMachine {
         }
     }
 
-    /// Evaluates a bytecode sequence against a specific module's parameters.
-    /// Returns the result of the expression (usually 1.0/0.0 for logic, or a value for math).
     pub fn eval(&mut self, code: &[Op], params: &[f64]) -> Result<f64, String> {
         self.stack.clear();
 
@@ -33,27 +43,14 @@ impl VirtualMachine {
                 Op::Add => self.binary_op(|a, b| a + b)?,
                 Op::Sub => self.binary_op(|a, b| a - b)?,
                 Op::Mul => self.binary_op(|a, b| a * b)?,
-                Op::Div => self.binary_op(|a, b| if b == 0.0 { 0.0 } else { a / b })?,
+                Op::Div => self.binary_op(|a, b| if b == 0.0 { f64::NAN } else { a / b })?,
                 Op::Pow => self.binary_op(|a, b| a.powf(b))?,
                 Op::Neg => {
                     let a = self.pop()?;
                     self.stack.push(-a);
                 }
-                // Logical/Relational (Return 1.0 for True, 0.0 for False)
-                Op::Eq => self.binary_op(|a, b| {
-                    if (a - b).abs() < f64::EPSILON {
-                        1.0
-                    } else {
-                        0.0
-                    }
-                })?,
-                Op::Ne => self.binary_op(|a, b| {
-                    if (a - b).abs() >= f64::EPSILON {
-                        1.0
-                    } else {
-                        0.0
-                    }
-                })?,
+                Op::Eq => self.binary_op(|a, b| if float_eq(a, b) { 1.0 } else { 0.0 })?,
+                Op::Ne => self.binary_op(|a, b| if !float_eq(a, b) { 1.0 } else { 0.0 })?,
                 Op::Gt => self.binary_op(|a, b| if a > b { 1.0 } else { 0.0 })?,
                 Op::Lt => self.binary_op(|a, b| if a < b { 1.0 } else { 0.0 })?,
                 Op::Ge => self.binary_op(|a, b| if a >= b { 1.0 } else { 0.0 })?,

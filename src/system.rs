@@ -52,12 +52,9 @@ impl System {
     /// Parses a single rule string and adds it to the system.
     /// Example: "A(x, y) : y < 5 -> A(x * 2, y + 1)"
     pub fn add_rule(&mut self, rule_src: &str) -> Result<(), SystemError> {
-        // 1. Parse
         let (_, rule_ast) =
             parser::parse_rule(rule_src).map_err(|e| SystemError::ParseError(e.to_string()))?;
 
-        // 2. Extract Variable Names from Predecessor (Variable Binding)
-        // e.g. A(t, d) -> ["t", "d"]
         let mut param_names = Vec::new();
         for param in &rule_ast.predecessor.params {
             match param {
@@ -67,14 +64,13 @@ impl System {
         }
         let param_count = param_names.len();
 
-        // 3. Initialize Compiler with these bindings
-        // This maps "t" -> LoadParam(0), "d" -> LoadParam(1)
         let mut compiler = Compiler::new(param_names);
 
-        // 4. Intern Predecessor Symbol
-        let pred_sym = self.interner.intern(&rule_ast.predecessor.symbol);
+        let pred_sym = self
+            .interner
+            .intern(&rule_ast.predecessor.symbol)
+            .map_err(SystemError::CompileError)?;
 
-        // 5. Compile Condition (if exists)
         let condition_code = if let Some(cond_expr) = &rule_ast.condition {
             Some(
                 compiler
@@ -85,10 +81,13 @@ impl System {
             None
         };
 
-        // 6. Compile Successors
         let mut runtime_successors = Vec::new();
         for succ in &rule_ast.successors {
-            let succ_sym = self.interner.intern(&succ.symbol);
+            // [FIXED] intern() now correctly propagates errors
+            let succ_sym = self
+                .interner
+                .intern(&succ.symbol)
+                .map_err(SystemError::CompileError)?;
 
             let mut compiled_params = Vec::new();
             for expr in &succ.params {
@@ -102,7 +101,6 @@ impl System {
             });
         }
 
-        // 7. Store
         self.rules.push(RuntimeRule {
             predecessor: pred_sym,
             probability: rule_ast.probability,
@@ -124,10 +122,11 @@ impl System {
             let (next_input, module) = parser::parse_module(remaining)
                 .map_err(|e| SystemError::ParseError(e.to_string()))?;
 
-            let sym_id = self.interner.intern(&module.symbol);
+            let sym_id = self
+                .interner
+                .intern(&module.symbol)
+                .map_err(SystemError::CompileError)?;
 
-            // For the axiom, expressions must be constant numbers (literals).
-            // We do a simple evaluation here or strict check.
             let mut values = Vec::new();
             for expr in module.params {
                 if let ast::Expr::Number(val) = expr {
@@ -138,14 +137,12 @@ impl System {
                     ));
                 }
             }
-
-            // Push to SymbiosState
-            // We ignore errors here for brevity, but in prod we'd map SymbiosError
-            let _ = self.state.push(sym_id, &values);
+            self.state
+                .push(sym_id, 0.0, &values)
+                .map_err(|e| SystemError::CompileError(e.to_string()))?;
 
             remaining = next_input;
         }
-
         Ok(())
     }
 }

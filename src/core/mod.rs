@@ -19,10 +19,12 @@ pub enum SymbiosError {
 #[derive(Debug, Clone, Default)]
 pub struct SymbiosState {
     symbols: Vec<u16>,
+    birth_times: Vec<f64>,
     params: Vec<f64>,
     topology: Vec<u32>,
     offsets: Vec<u32>,
     lengths: Vec<u16>,
+    pub current_time: f64,
 }
 
 impl SymbiosState {
@@ -30,45 +32,36 @@ impl SymbiosState {
         Self::default()
     }
 
-    pub fn with_capacity(cap: usize) -> Self {
-        Self {
-            symbols: Vec::with_capacity(cap),
-            params: Vec::with_capacity(cap),
-            topology: Vec::with_capacity(cap),
-            offsets: Vec::with_capacity(cap),
-            lengths: Vec::with_capacity(cap),
-        }
-    }
-
     pub fn clear(&mut self) {
         self.symbols.clear();
+        self.birth_times.clear();
         self.params.clear();
         self.topology.clear();
         self.offsets.clear();
         self.lengths.clear();
+        self.current_time = 0.0;
     }
 
     pub fn len(&self) -> usize {
         self.symbols.len()
     }
+
     pub fn is_empty(&self) -> bool {
         self.symbols.is_empty()
     }
 
-    pub fn push(&mut self, symbol: u16, parameters: &[f64]) -> Result<(), SymbiosError> {
-        if self.symbols.len() >= (u32::MAX as usize - 2) {
+    pub fn push(&mut self, symbol: u16, age: f64, parameters: &[f64]) -> Result<(), SymbiosError> {
+        const SAFE_LIMIT: usize = (u32::MAX as usize) - 1024;
+        if self.symbols.len() >= SAFE_LIMIT || (self.params.len() + parameters.len()) >= SAFE_LIMIT
+        {
             return Err(SymbiosError::CapacityOverflow);
         }
-        if (self.params.len() + parameters.len()) >= (u32::MAX as usize - 1) {
-            return Err(SymbiosError::CapacityOverflow);
-        }
-
-        // [FIX] Restored Missing Guard
         if parameters.len() > u16::MAX as usize {
             return Err(SymbiosError::ParameterOverflow(parameters.len(), u16::MAX));
         }
 
         self.symbols.push(symbol);
+        self.birth_times.push(self.current_time - age);
         self.offsets.push(self.params.len() as u32);
         self.lengths.push(parameters.len() as u16);
         self.params.extend_from_slice(parameters);
@@ -84,11 +77,6 @@ impl SymbiosState {
         if open_sym == close_sym {
             return Err(SymbiosError::AmbiguousTopology);
         }
-
-        // [FIX] Removed global wipe loop to allow multi-pass accumulation.
-        // Users must call clear() or manage state validity if re-using containers.
-        // This enables [ ] and { } to coexist.
-
         let mut stack = Vec::new();
         const MAX_NESTING: usize = 4096;
 
@@ -107,7 +95,6 @@ impl SymbiosState {
                 }
             }
         }
-
         if !stack.is_empty() {
             return Err(SymbiosError::UnmatchedBracket(stack[0] as usize));
         }
@@ -120,10 +107,6 @@ impl SymbiosState {
         }
         let start = self.offsets[index] as usize;
         let len = self.lengths[index] as usize;
-        if start + len > self.params.len() {
-            return None;
-        }
-
         let skip = match self.topology[index] {
             u32::MAX => None,
             val if (val as usize) < self.symbols.len() => Some(val as usize),
@@ -132,15 +115,21 @@ impl SymbiosState {
 
         Some(ModuleView {
             sym: self.symbols[index],
+            age: self.current_time - self.birth_times[index],
             params: &self.params[start..start + len],
             skip_idx: skip,
         })
+    }
+
+    pub fn advance_time(&mut self, dt: f64) {
+        self.current_time += dt;
     }
 }
 
 #[derive(Debug)]
 pub struct ModuleView<'a> {
     pub sym: u16,
+    pub age: f64,
     pub params: &'a [f64],
     pub skip_idx: Option<usize>,
 }

@@ -26,10 +26,10 @@ fn test_simultaneous_topology_pairs() {
     let (b_open, b_close) = (1, 2);
     let (p_open, p_close) = (3, 4);
 
-    state.push(b_open, &[]).unwrap(); // 0: [
-    state.push(p_open, &[]).unwrap(); // 1: {
-    state.push(p_close, &[]).unwrap(); // 2: }
-    state.push(b_close, &[]).unwrap(); // 3: ]
+    state.push(b_open, 0.0, &[]).unwrap(); // 0: [
+    state.push(p_open, 0.0, &[]).unwrap(); // 1: {
+    state.push(p_close, 0.0, &[]).unwrap(); // 2: }
+    state.push(b_close, 0.0, &[]).unwrap(); // 3: ]
 
     state.calculate_topology(b_open, b_close).unwrap();
     state.calculate_topology(p_open, p_close).unwrap();
@@ -135,6 +135,6 @@ fn test_topology_sentinel_collision() {
     let mut state = SymbiosState::new();
     let open = 1;
     // Fill state...
-    state.push(open, &[]).unwrap();
+    state.push(open, 0.0, &[]).unwrap();
     assert!(state.get_view(0).unwrap().skip_idx.is_none());
 }
