@@ -1,4 +1,3 @@
-/* tests/context_matching_test.rs */
 use symbios::System;
 use symbios::system::matching;
 use symbios::vm::VirtualMachine;

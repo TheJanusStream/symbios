@@ -1,4 +1,3 @@
-/* tests/interner_tests.rs */
 use symbios::core::interner::SymbolTable;
 
 #[test]
