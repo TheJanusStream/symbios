@@ -18,6 +18,8 @@ pub enum SymbiosError {
     MaxNestingExceeded,
     #[error("State capacity overflow")]
     CapacityOverflow,
+    #[error("Internal index out of bounds: {0}")]
+    InvalidIndex(usize),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,11 +31,23 @@ struct ModuleData {
     topology_link: u32,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SymbiosState {
     modules: Vec<ModuleData>,
     params: Vec<f64>,
     pub current_time: f64,
+    pub max_capacity: usize,
+}
+
+impl Default for SymbiosState {
+    fn default() -> Self {
+        Self {
+            modules: Vec::new(),
+            params: Vec::new(),
+            current_time: 0.0,
+            max_capacity: 1_000_000,
+        }
+    }
 }
 
 impl SymbiosState {
@@ -58,6 +72,10 @@ impl SymbiosState {
     }
 
     pub fn push(&mut self, symbol: u16, age: f64, parameters: &[f64]) -> Result<(), SymbiosError> {
+        if self.modules.len() >= self.max_capacity {
+            return Err(SymbiosError::CapacityOverflow);
+        }
+
         if self.modules.len() >= (u32::MAX as usize - 1)
             || (self.params.len() + parameters.len()) >= (u32::MAX as usize - 1)
         {

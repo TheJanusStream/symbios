@@ -21,7 +21,7 @@ pub enum SystemError {
     #[error("VM error: {0}")]
     VMError(String),
     #[error("State error: {0}")]
-    StateError(String),
+    State(#[from] crate::core::SymbiosError),
 }
 
 #[derive(Debug, Clone)]
@@ -48,6 +48,7 @@ pub struct System {
     pub ignored_symbols: Vec<u16>,
     pub rng: Pcg64,
     pub constants: HashMap<String, f64>,
+    pub max_capacity: usize,
 }
 
 impl System {
@@ -59,6 +60,7 @@ impl System {
             ignored_symbols: Vec::new(),
             rng: Pcg64::seed_from_u64(42),
             constants: HashMap::new(),
+            max_capacity: 1_000_000,
         }
     }
 
@@ -74,19 +76,18 @@ impl System {
 
         for _ in 0..steps {
             if let (Some(o), Some(c)) = (open_sym, close_sym) {
-                self.state
-                    .calculate_topology(o, c)
-                    .map_err(|e| SystemError::StateError(e.to_string()))?;
+                self.state.calculate_topology(o, c)?;
             }
 
             let mut next_state = SymbiosState::new();
+            next_state.max_capacity = self.max_capacity;
             next_state.current_time = self.state.current_time;
 
             for index in 0..self.state.len() {
                 let view = self
                     .state
                     .get_view(index)
-                    .ok_or(SystemError::StateError("Index out of bounds".to_string()))?;
+                    .ok_or(crate::core::SymbiosError::InvalidIndex(index))?;
 
                 let mut candidates = Vec::new();
                 let mut total_probability = 0.0;
@@ -96,9 +97,13 @@ impl System {
                         continue;
                     }
 
-                    let is_match =
-                        matching::matches(&self.state, index, rule, &self.ignored_symbols, &mut vm)
-                            .map_err(|e| SystemError::StateError(e.to_string()))?;
+                    let is_match = matching::matches(
+                        &self.state,
+                        index,
+                        rule,
+                        &self.ignored_symbols,
+                        &mut vm,
+                    )?;
 
                     if is_match {
                         candidates.push(rule);
@@ -164,14 +169,10 @@ impl System {
                             new_params.push(val);
                         }
 
-                        next_state
-                            .push(successor.symbol, 0.0, &new_params)
-                            .map_err(|e| SystemError::StateError(e.to_string()))?;
+                        next_state.push(successor.symbol, 0.0, &new_params)?;
                     }
                 } else {
-                    next_state
-                        .push(view.sym, view.age, view.params)
-                        .map_err(|e| SystemError::StateError(e.to_string()))?;
+                    next_state.push(view.sym, view.age, view.params)?;
                 }
             }
 
@@ -345,9 +346,7 @@ impl System {
             }
 
             // Push to state
-            self.state
-                .push(sym_id, 0.0, &values)
-                .map_err(|e| SystemError::StateError(e.to_string()))?;
+            self.state.push(sym_id, 0.0, &values)?;
         }
 
         Ok(())
