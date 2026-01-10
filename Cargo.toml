@@ -5,6 +5,7 @@ edition = "2024"
 authors = ["Janus"]
 description = "A derivation engine for L-Systems (ABOP compliant)."
 license = "MIT"
+readme = "README.md"
 repository = "https://github.com/TheJanusStream/symbios"
 keywords = ["lsystem", "procedural", "generative", "simulation", "no-std"]
 categories = ["simulation", "game-development", "mathematics"]
