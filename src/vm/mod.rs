@@ -3,7 +3,7 @@ pub mod compiler;
 pub mod ops;
 
 pub use compiler::Compiler;
-pub use ops::Op;
+pub use ops::{MathOp, Op};
 use std::fmt;
 
 /// Robust floating point equality check.
@@ -115,6 +115,31 @@ impl VirtualMachine {
                     let a = self.pop().map_err(|e| e.to_string())?;
                     self.stack.push(if a == 0.0 { 1.0 } else { 0.0 });
                 }
+                Op::Math(op, arity) => {
+                    // Pre-check stack depth
+                    if self.stack.len() < *arity as usize {
+                        return Err(VMError::StackUnderflow.to_string());
+                    }
+
+                    match op {
+                        MathOp::Sin => self.unary_op(|a| a.sin()).map_err(|e| e.to_string())?,
+                        MathOp::Cos => self.unary_op(|a| a.cos()).map_err(|e| e.to_string())?,
+                        MathOp::Tan => self.unary_op(|a| a.tan()).map_err(|e| e.to_string())?,
+                        MathOp::Sqrt => self
+                            .unary_op(|a| if a < 0.0 { f64::NAN } else { a.sqrt() })
+                            .map_err(|e| e.to_string())?,
+                        MathOp::Abs => self.unary_op(|a| a.abs()).map_err(|e| e.to_string())?,
+                        MathOp::Floor => self.unary_op(|a| a.floor()).map_err(|e| e.to_string())?,
+                        MathOp::Ceil => self.unary_op(|a| a.ceil()).map_err(|e| e.to_string())?,
+                        MathOp::Round => self.unary_op(|a| a.round()).map_err(|e| e.to_string())?,
+                        MathOp::Min => {
+                            self.binary_op(|a, b| a.min(b)).map_err(|e| e.to_string())?
+                        }
+                        MathOp::Max => {
+                            self.binary_op(|a, b| a.max(b)).map_err(|e| e.to_string())?
+                        }
+                    }
+                }
             }
         }
 
@@ -131,6 +156,22 @@ impl VirtualMachine {
 
     fn pop(&mut self) -> Result<f64, VMError> {
         self.stack.pop().ok_or(VMError::StackUnderflow)
+    }
+
+    fn unary_op<F>(&mut self, op: F) -> Result<(), VMError>
+    where
+        F: Fn(f64) -> f64,
+    {
+        if self.stack.is_empty() {
+            return Err(VMError::StackUnderflow);
+        }
+        let a = self.stack.pop().unwrap();
+        let result = op(a);
+        if result.is_nan() {
+            return Err(VMError::MathError);
+        }
+        self.stack.push(result);
+        Ok(())
     }
 
     fn binary_op<F>(&mut self, op: F) -> Result<(), VMError>

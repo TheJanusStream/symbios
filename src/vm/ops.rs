@@ -1,13 +1,25 @@
+/* src/vm/ops.rs */
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MathOp {
+    Sin,
+    Cos,
+    Tan,
+    Sqrt,
+    Abs,
+    Floor,
+    Ceil,
+    Round,
+    Min,
+    Max,
+    // Randomness could be added here later if we want it inside expressions
+    // but usually L-systems handle stochasticity at the rule selection level.
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Op {
     // Data
     Push(f64),
-    /// Loads a parameter from the combined context buffer.
-    /// Index 0..N = Predecessor parameters.
-    /// Index N..M = Left Context parameters.
-    /// Index M..K = Right Context parameters.
     LoadParam(u16),
-    /// Loads the age (current_time - birth_time) of the Predecessor.
     LoadAge,
 
     // Arithmetic
@@ -30,4 +42,8 @@ pub enum Op {
     And,
     Or,
     Not,
+    
+    // Functions
+    // (Op, Arity) - Arity stored for fast stack check
+    Math(MathOp, u8), 
 }

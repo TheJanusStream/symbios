@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use symbios::parser::ast::Expr;
 use symbios::vm::{Compiler, Op, VirtualMachine};
 
@@ -5,7 +6,8 @@ use symbios::vm::{Compiler, Op, VirtualMachine};
 fn test_compile_and_eval_arithmetic() {
     // Context: module A(x, y) where x is index 0, y is index 1
     let params = vec!["x".to_string(), "y".to_string()];
-    let mut compiler = Compiler::new(params);
+    let constants = HashMap::new(); // Empty map
+    let mut compiler = Compiler::new(params, &constants);
 
     // Expr: x * 2 + y
     let expr = Expr::Add(
@@ -37,7 +39,8 @@ fn test_compile_and_eval_arithmetic() {
 fn test_logic_and_guards() {
     // Context: A(t) : t > 5
     let params = vec!["t".to_string()];
-    let mut compiler = Compiler::new(params);
+    let constants = HashMap::new();
+    let mut compiler = Compiler::new(params, &constants);
 
     // Expr: t > 5
     let expr = Expr::Gt(

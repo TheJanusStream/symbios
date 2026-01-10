@@ -1,9 +1,11 @@
+/* src/system.rs */
 use crate::core::SymbiosState;
 use crate::core::interner::SymbolTable;
 use crate::parser::{self, ast};
 use crate::vm::{Compiler, Op};
 use rand::{Rng, SeedableRng};
 use rand_pcg::Pcg64;
+use std::collections::HashMap;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -36,8 +38,6 @@ pub struct RuntimeRule {
     pub probability: f64,
     pub condition: Option<Vec<Op>>,
     pub successors: Vec<RuntimeModule>,
-    // Arity Enforcement: Store expected param count for [Pred, L1, L2..., R1, R2...]
-    // The Compiler assumes this exact layout.
     pub expected_arities: Vec<usize>,
 }
 
@@ -47,6 +47,7 @@ pub struct System {
     pub state: SymbiosState,
     pub ignored_symbols: Vec<u16>,
     pub rng: Pcg64,
+    pub constants: HashMap<String, f64>,
 }
 
 impl System {
@@ -56,7 +57,8 @@ impl System {
             rules: Vec::new(),
             state: SymbiosState::new(),
             ignored_symbols: Vec::new(),
-            rng: Pcg64::seed_from_u64(42), // Default seed for reproducibility
+            rng: Pcg64::seed_from_u64(42),
+            constants: HashMap::new(),
         }
     }
 
@@ -86,7 +88,6 @@ impl System {
                     .get_view(index)
                     .ok_or(SystemError::StateError("Index out of bounds".to_string()))?;
 
-                // 1. Collect ALL matching candidates
                 let mut candidates = Vec::new();
                 let mut total_probability = 0.0;
 
@@ -95,8 +96,6 @@ impl System {
                         continue;
                     }
 
-                    // This is the expensive part (VM execution for guards),
-                    // but necessary for stochastic + context/parametric systems.
                     let is_match =
                         matching::matches(&self.state, index, rule, &self.ignored_symbols, &mut vm)
                             .map_err(|e| SystemError::StateError(e.to_string()))?;
@@ -107,17 +106,13 @@ impl System {
                     }
                 }
 
-                // 2. Select Winner
                 let selected_rule = if candidates.is_empty() {
                     None
                 } else if candidates.len() == 1 {
                     Some(candidates[0])
                 } else {
-                    // Weighted Random Choice (rand 0.8 syntax)
                     let mut r = self.rng.random_range(0.0..total_probability);
                     let mut winner = None;
-
-                    // FIX: Iterate by reference to avoid moving `candidates`
                     for candidate in &candidates {
                         if r < candidate.probability {
                             winner = Some(*candidate);
@@ -125,13 +120,10 @@ impl System {
                         }
                         r -= candidate.probability;
                     }
-                    // Fallback for floating point errors (pick last)
                     winner.or_else(|| candidates.last().copied())
                 };
 
-                // 3. Apply
                 if let Some(rule) = selected_rule {
-                    // (Context collection logic same as before)
                     let mut context_frame = Vec::new();
                     context_frame.extend_from_slice(view.params);
 
@@ -177,7 +169,6 @@ impl System {
                             .map_err(|e| SystemError::StateError(e.to_string()))?;
                     }
                 } else {
-                    // Identity
                     next_state
                         .push(view.sym, view.age, view.params)
                         .map_err(|e| SystemError::StateError(e.to_string()))?;
@@ -190,6 +181,35 @@ impl System {
         Ok(())
     }
 
+    pub fn add_directive(&mut self, directive_src: &str) -> Result<(), SystemError> {
+        let (_, directive) = parser::parse_directive(directive_src)
+            .map_err(|e| SystemError::ParseError(e.to_string()))?;
+
+        match directive {
+            ast::Directive::Ignore(symbols) => {
+                for sym_str in symbols {
+                    let id = self
+                        .interner
+                        .get_or_intern(&sym_str)
+                        .map_err(SystemError::InternerError)?;
+                    if !self.ignored_symbols.contains(&id) {
+                        self.ignored_symbols.push(id);
+                    }
+                }
+            }
+            ast::Directive::Define(name, expr) => {
+                let mut compiler = Compiler::new(vec![], &self.constants);
+                let code = compiler.compile(&expr).map_err(SystemError::CompileError)?;
+
+                let mut vm = crate::vm::VirtualMachine::new();
+                let val = vm.eval(&code, &[], 0.0).map_err(SystemError::VMError)?;
+
+                self.constants.insert(name, val);
+            }
+        }
+        Ok(())
+    }
+
     pub fn add_rule(&mut self, rule_src: &str) -> Result<(), SystemError> {
         let (_, rule_ast) =
             parser::parse_rule(rule_src).map_err(|e| SystemError::ParseError(e.to_string()))?;
@@ -197,7 +217,6 @@ impl System {
         let mut param_names = Vec::new();
         let mut expected_arities = Vec::new();
 
-        // 1. Predecessor
         expected_arities.push(rule_ast.predecessor.params.len());
         for param in &rule_ast.predecessor.params {
             if let ast::Expr::Variable(name) = param {
@@ -210,7 +229,6 @@ impl System {
             }
         }
 
-        // 2. Left Context
         for m in &rule_ast.left_context {
             expected_arities.push(m.params.len());
             for param in &m.params {
@@ -220,7 +238,6 @@ impl System {
             }
         }
 
-        // 3. Right Context
         for m in &rule_ast.right_context {
             expected_arities.push(m.params.len());
             for param in &m.params {
@@ -230,7 +247,7 @@ impl System {
             }
         }
 
-        let mut compiler = Compiler::new(param_names);
+        let mut compiler = Compiler::new(param_names, &self.constants);
 
         let pred_sym = self
             .interner
@@ -284,7 +301,7 @@ impl System {
             probability: rule_ast.probability,
             condition: condition_code,
             successors: runtime_successors,
-            expected_arities, // Stored for runtime check
+            expected_arities,
         });
         Ok(())
     }
@@ -292,26 +309,47 @@ impl System {
     pub fn set_axiom(&mut self, axiom_src: &str) -> Result<(), SystemError> {
         let mut remaining = axiom_src;
         self.state.clear();
+
+        // Phase 1: Parse and Intern
+        // We decouple parsing from evaluation to avoid holding `self.interner` borrow
+        // while needing `self.constants` for evaluation.
+        let mut parsed_modules = Vec::new();
+
         while !remaining.trim().is_empty() {
             let (ni, module) = parser::parse_module(remaining)
                 .map_err(|e| SystemError::ParseError(e.to_string()))?;
+
             let sym_id = self
                 .interner
                 .get_or_intern(&module.symbol)
                 .map_err(SystemError::InternerError)?;
-            let mut values = Vec::new();
-            for expr in module.params {
-                if let ast::Expr::Number(v) = expr {
-                    values.push(v);
-                } else {
-                    return Err(SystemError::CompileError("Axiom requires literals".into()));
-                }
-            }
-            self.state
-                .push(sym_id, 0.0, &values)
-                .map_err(|e| SystemError::CompileError(e.to_string()))?;
+
+            parsed_modules.push((sym_id, module.params));
             remaining = ni;
         }
+
+        // Phase 2: Compile and Evaluate
+        let mut compiler = Compiler::new(vec![], &self.constants);
+        let mut vm = crate::vm::VirtualMachine::new();
+
+        for (sym_id, params) in parsed_modules {
+            let mut values = Vec::new();
+            for expr in params {
+                // Compile the expression (using constants)
+                let code = compiler.compile(&expr).map_err(SystemError::CompileError)?;
+
+                // Evaluate immediately (no params, age 0)
+                let val = vm.eval(&code, &[], 0.0).map_err(SystemError::VMError)?;
+
+                values.push(val);
+            }
+
+            // Push to state
+            self.state
+                .push(sym_id, 0.0, &values)
+                .map_err(|e| SystemError::StateError(e.to_string()))?;
+        }
+
         Ok(())
     }
 }
@@ -332,17 +370,14 @@ pub mod matching {
             .get_view(index)
             .ok_or(SystemError::InvalidPredecessorParam)?;
 
-        // 1. Symbol Match
         if pred_view.sym != rule.predecessor {
             return Ok(false);
         }
 
-        // 2. Arity Match (Predecessor) - CRITICAL FIX for Alignment
         if pred_view.params.len() != rule.expected_arities[0] {
             return Ok(false);
         }
 
-        // 3. Context Match & Collect
         let mut left_indices = Vec::new();
         if !rule.left_context.is_empty() {
             if !match_left(state, index, &rule.left_context, ignore, &mut left_indices) {
@@ -363,9 +398,6 @@ pub mod matching {
             }
         }
 
-        // 4. Arity Match (Context)
-        // Verify that every found context neighbor has the exact param count expected by the rule.
-        // Left context arities start at index 1.
         for (i, &ctx_idx) in left_indices.iter().enumerate() {
             let view = state
                 .get_view(ctx_idx)
@@ -374,7 +406,7 @@ pub mod matching {
                 return Ok(false);
             }
         }
-        // Right context arities start after Left.
+
         let right_offset = 1 + rule.left_context.len();
         for (i, &ctx_idx) in right_indices.iter().enumerate() {
             let view = state
@@ -385,15 +417,11 @@ pub mod matching {
             }
         }
 
-        // 5. Condition Eval
         if let Some(code) = &rule.condition {
-            // Build Context Frame: Pred -> Left -> Right
-            // Only strictly valid due to Arity Checks above.
             let mut context_frame = Vec::new();
             context_frame.extend_from_slice(pred_view.params);
 
             for &i in &left_indices {
-                // Safe unwrap: verified in step 4
                 context_frame.extend_from_slice(state.get_view(i).unwrap().params);
             }
             for &i in &right_indices {
@@ -426,10 +454,9 @@ pub mod matching {
         let mut pat_idx = pattern.len() - 1;
 
         loop {
-            // SAFE: Remove unwrap
             let view = match state.get_view(curr) {
                 Some(v) => v,
-                None => return false, // Should be impossible if index logic is sound, but safe
+                None => return false,
             };
 
             if ignore.contains(&view.sym) {
