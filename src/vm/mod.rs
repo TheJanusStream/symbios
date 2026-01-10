@@ -95,9 +95,7 @@ impl VirtualMachine {
                     let a = self.pop().map_err(|e| e.to_string())?;
                     self.stack.push(-a);
                 }
-                Op::Eq => self
-                    .compare_op(|a, b| float_eq(a, b))
-                    .map_err(|e| e.to_string())?,
+                Op::Eq => self.compare_op(float_eq).map_err(|e| e.to_string())?,
                 Op::Ne => self
                     .compare_op(|a, b| !float_eq(a, b))
                     .map_err(|e| e.to_string())?,
@@ -179,7 +177,6 @@ impl VirtualMachine {
     where
         F: Fn(f64, f64) -> f64,
     {
-        // FIX: Check stack depth BEFORE popping to prevent corruption
         if self.stack.len() < 2 {
             return Err(VMError::StackUnderflow);
         }
@@ -189,7 +186,6 @@ impl VirtualMachine {
 
         let result = op(a, b);
 
-        // FIX: Strictly treat NaN as a runtime error in derivation logic
         if result.is_nan() {
             return Err(VMError::MathError);
         }

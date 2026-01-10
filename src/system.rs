@@ -50,6 +50,12 @@ pub struct System {
     pub max_capacity: usize,
 }
 
+impl Default for System {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl System {
     pub fn new() -> Self {
         Self {
@@ -375,23 +381,23 @@ pub mod matching {
         }
 
         let mut left_indices = Vec::new();
-        if !rule.left_context.is_empty() {
-            if !match_left(state, index, &rule.left_context, ignore, &mut left_indices) {
-                return Ok(false);
-            }
+        if !rule.left_context.is_empty()
+            && !match_left(state, index, &rule.left_context, ignore, &mut left_indices)
+        {
+            return Ok(false);
         }
 
         let mut right_indices = Vec::new();
-        if !rule.right_context.is_empty() {
-            if !match_right(
+        if !rule.right_context.is_empty()
+            && !match_right(
                 state,
                 index,
                 &rule.right_context,
                 ignore,
                 &mut right_indices,
-            ) {
-                return Ok(false);
-            }
+            )
+        {
+            return Ok(false);
         }
 
         for (i, &ctx_idx) in left_indices.iter().enumerate() {
@@ -426,7 +432,7 @@ pub mod matching {
 
             let res = vm
                 .eval(code, &context_frame, pred_view.age)
-                .map_err(|e| SystemError::CompileError(e))?;
+                .map_err(SystemError::CompileError)?;
 
             if res == 0.0 {
                 return Ok(false);
@@ -459,12 +465,12 @@ pub mod matching {
             }
 
             // 2. Handle Branching Structure
-            if let Some(skip_target) = view.skip_idx {
-                if skip_target < curr as usize {
-                    // We hit a ']', skip the whole branch
-                    curr = skip_target as i32 - 1;
-                    continue;
-                }
+            if let Some(skip_target) = view.skip_idx
+                && skip_target < curr as usize
+            {
+                // We hit a ']', skip the whole branch
+                curr = skip_target as i32 - 1;
+                continue;
             }
 
             // 3. Attempt Match
@@ -516,11 +522,11 @@ pub mod matching {
                 continue;
             }
 
-            if let Some(skip_target) = view.skip_idx {
-                if skip_target > curr {
-                    curr = skip_target + 1;
-                    continue;
-                }
+            if let Some(skip_target) = view.skip_idx
+                && skip_target > curr
+            {
+                curr = skip_target + 1;
+                continue;
             }
 
             return false;
