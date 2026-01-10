@@ -14,6 +14,10 @@ pub enum SystemError {
     InvalidPredecessorParam,
     #[error("Interner error: {0}")]
     InternerError(String),
+    #[error("VM error: {0}")]
+    VMError(String),
+    #[error("State error: {0}")]
+    StateError(String),
 }
 
 #[derive(Debug, Clone)]
@@ -50,6 +54,132 @@ impl System {
             state: SymbiosState::new(),
             ignored_symbols: Vec::new(),
         }
+    }
+
+    pub fn derive(&mut self, steps: usize) -> Result<(), SystemError> {
+        let mut vm = crate::vm::VirtualMachine::new();
+
+        // Context configuration
+        // In a real implementation, we'd lookup specific "open" and "close" symbols
+        // for topology calculation. For now we assume a standard set or skip if not configured.
+        // Assuming '[' and ']' are interned if used.
+        let open_sym = self.interner.resolve_id("[");
+        let close_sym = self.interner.resolve_id("]");
+
+        for _ in 0..steps {
+            // 1. Calculate Topology (Skip Links) for Context Matching
+            if let (Some(o), Some(c)) = (open_sym, close_sym) {
+                self.state
+                    .calculate_topology(o, c)
+                    .map_err(|e| SystemError::StateError(e.to_string()))?;
+            }
+
+            // 2. Prepare Next State (Double Buffering)
+            let mut next_state = SymbiosState::new();
+            // Preserve current time in the new state, or advance it?
+            // Standard L-systems are discrete, so we just copy the time base or keep 0.
+            // If we mix continuous/discrete, we might want to carry it over.
+            next_state.current_time = self.state.current_time;
+
+            // 3. Iterate over every module in the current string
+            for index in 0..self.state.len() {
+                let view = self.state.get_view(index).ok_or(SystemError::StateError(
+                    "Index out of bounds during derivation".to_string(),
+                ))?;
+
+                let mut matched_rule: Option<&RuntimeRule> = None;
+
+                // 4. Find matching rule
+                for rule in &self.rules {
+                    // Quick symbol check before expensive matching logic
+                    if view.sym != rule.predecessor {
+                        continue;
+                    }
+
+                    // Detailed match (Arity, Context, Condition)
+                    let is_match =
+                        matching::matches(&self.state, index, rule, &self.ignored_symbols, &mut vm)
+                            .map_err(|e| SystemError::StateError(e.to_string()))?;
+
+                    if is_match {
+                        matched_rule = Some(rule);
+                        break; // Deterministic: First matching rule wins
+                    }
+                }
+
+                // 5. Apply Rule or Identity
+                if let Some(rule) = matched_rule {
+                    // A. Collect Context Parameters for VM
+                    // (Same logic as matching::matches, ideally extracted to a helper,
+                    // but repeated here for the Successor construction)
+                    let mut context_frame = Vec::new();
+                    context_frame.extend_from_slice(view.params);
+
+                    // We need to re-scan context to get parameters.
+                    // Optimization: `matching::matches` could return indices,
+                    // but for safety/simplicity we re-scan or just assume strict arity compliance.
+
+                    // Re-collect left context params
+                    let mut left_indices = Vec::new();
+                    if !rule.left_context.is_empty() {
+                        matching::match_left(
+                            &self.state,
+                            index,
+                            &rule.left_context,
+                            &self.ignored_symbols,
+                            &mut left_indices,
+                        );
+                    }
+                    for &i in &left_indices {
+                        context_frame.extend_from_slice(self.state.get_view(i).unwrap().params);
+                    }
+
+                    // Re-collect right context params
+                    let mut right_indices = Vec::new();
+                    if !rule.right_context.is_empty() {
+                        matching::match_right(
+                            &self.state,
+                            index,
+                            &rule.right_context,
+                            &self.ignored_symbols,
+                            &mut right_indices,
+                        );
+                    }
+                    for &i in &right_indices {
+                        context_frame.extend_from_slice(self.state.get_view(i).unwrap().params);
+                    }
+
+                    // B. Generate Successors
+                    for successor in &rule.successors {
+                        let mut new_params = Vec::new();
+                        for param_code in &successor.params {
+                            let val = vm
+                                .eval(param_code, &context_frame, view.age)
+                                .map_err(SystemError::VMError)?;
+                            new_params.push(val);
+                        }
+
+                        // Push new module. Age is 0.0 (born now).
+                        next_state
+                            .push(successor.symbol, 0.0, &new_params)
+                            .map_err(|e| SystemError::StateError(e.to_string()))?;
+                    }
+                } else {
+                    // Identity: Copy module as-is
+                    // We preserve the *relative* age? In discrete systems, usually we just copy.
+                    // But if we track `birth_time`, copying the module with `push` calculates birth_time relative to `next_state.current_time`.
+                    // To preserve the absolute age, we must calculate the relative age passed to push.
+                    next_state
+                        .push(view.sym, view.age, view.params)
+                        .map_err(|e| SystemError::StateError(e.to_string()))?;
+                }
+            }
+
+            // 6. Swap Buffers
+            self.state = next_state;
+        }
+
+        Ok(())
     }
 
     pub fn add_rule(&mut self, rule_src: &str) -> Result<(), SystemError> {
@@ -274,7 +404,7 @@ pub mod matching {
         Ok(true)
     }
 
-    fn match_left(
+    pub fn match_left(
         state: &SymbiosState,
         start_index: usize,
         pattern: &[u16],
@@ -331,7 +461,7 @@ pub mod matching {
         }
     }
 
-    fn match_right(
+    pub fn match_right(
         state: &SymbiosState,
         start_index: usize,
         pattern: &[u16],

@@ -37,6 +37,10 @@ impl SymbolTable {
         Ok(id)
     }
 
+    pub fn resolve_id(&self, name: &str) -> Option<u16> {
+        self.to_id.get(name).copied()
+    }
+
     pub fn resolve(&self, id: u16) -> Option<&str> {
         self.to_str.get(id as usize).map(|s| s.as_str())
     }
