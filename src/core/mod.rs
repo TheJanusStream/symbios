@@ -1,5 +1,10 @@
+use std::fmt;
+
 use thiserror::Error;
 pub mod interner;
+use serde::{Deserialize, Serialize};
+
+use crate::SymbolTable;
 
 #[derive(Error, Debug, PartialEq)]
 pub enum SymbiosError {
@@ -15,7 +20,7 @@ pub enum SymbiosError {
     CapacityOverflow,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct ModuleData {
     symbol: u16,
     birth_time: f64, // Absolute time for O(1) advance_time
@@ -24,7 +29,7 @@ struct ModuleData {
     topology_link: u32,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SymbiosState {
     modules: Vec<ModuleData>,
     params: Vec<f64>,
@@ -135,6 +140,43 @@ impl SymbiosState {
             // In a real crate, we might return Result or log error.
             // For now, silently ignoring invalid time steps prevents corruption.
         }
+    }
+
+    pub fn display<'a>(&'a self, interner: &'a SymbolTable) -> StateDisplay<'a> {
+        StateDisplay {
+            state: self,
+            interner,
+        }
+    }
+}
+
+pub struct StateDisplay<'a> {
+    state: &'a SymbiosState,
+    interner: &'a SymbolTable,
+}
+
+impl<'a> fmt::Display for StateDisplay<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for i in 0..self.state.len() {
+            if i > 0 {
+                write!(f, " ")?;
+            }
+            let view = self.state.get_view(i).unwrap();
+            let sym_str = self.interner.resolve(view.sym).unwrap_or("?");
+            write!(f, "{}", sym_str)?;
+
+            if !view.params.is_empty() {
+                write!(f, "(")?;
+                for (j, param) in view.params.iter().enumerate() {
+                    if j > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{:.4}", param)?;
+                }
+                write!(f, ")")?;
+            }
+        }
+        Ok(())
     }
 }
 

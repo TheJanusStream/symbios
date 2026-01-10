@@ -1,6 +1,7 @@
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct SymbolTable {
     to_id: HashMap<String, u16>,
     to_str: Vec<String>,
