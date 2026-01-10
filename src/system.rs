@@ -1,4 +1,3 @@
-/* src/system.rs */
 use crate::core::SymbiosState;
 use crate::core::interner::SymbolTable;
 use crate::parser::{self, ast};
@@ -91,7 +90,6 @@ impl System {
                 let mut candidates = Vec::new();
                 let mut total_probability = 0.0;
 
-                // FIX: Get the bucket of rules associated with this symbol
                 if let Some(bucket) = self.rules.get(&view.sym) {
                     for rule in bucket {
                         // view.sym is guaranteed to match rule.predecessor here
@@ -110,7 +108,6 @@ impl System {
                     }
                 }
 
-                // FIX: Guard against total_probability <= 0.0 to prevent rand panic
                 let selected_rule = if candidates.is_empty() || total_probability <= 0.0 {
                     None
                 } else if candidates.len() == 1 {
@@ -129,8 +126,6 @@ impl System {
                 };
 
                 if let Some(rule) = selected_rule {
-                    // ... (rest of derivation logic using `rule` instead of `selected_rule.unwrap()`) ...
-                    // (Ensure successory logic uses the reference `rule`)
                     let mut context_frame = Vec::new();
                     context_frame.extend_from_slice(view.params);
 

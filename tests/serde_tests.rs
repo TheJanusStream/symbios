@@ -16,7 +16,7 @@ fn test_interner_serde() {
 #[test]
 fn test_state_serde() {
     let mut state = SymbiosState::new();
-    // CRITICAL: Set current_time BEFORE pushing modules to ground the birth_time calculation.
+
     state.current_time = 10.0;
     state.push(1, 0.5, &[10.0, 20.0]).unwrap();
 

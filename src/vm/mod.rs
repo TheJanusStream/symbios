@@ -148,7 +148,8 @@ impl VirtualMachine {
             .last()
             .copied()
             .ok_or(VMError::EmptyStack.to_string())?;
-        if res.is_nan() {
+
+        if !res.is_finite() {
             return Err(VMError::MathError.to_string());
         }
         Ok(res)

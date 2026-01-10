@@ -1,4 +1,3 @@
-/* src/vm/ops.rs */
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MathOp {
     Sin,
@@ -11,8 +10,6 @@ pub enum MathOp {
     Round,
     Min,
     Max,
-    // Randomness could be added here later if we want it inside expressions
-    // but usually L-systems handle stochasticity at the rule selection level.
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -42,8 +39,8 @@ pub enum Op {
     And,
     Or,
     Not,
-    
+
     // Functions
     // (Op, Arity) - Arity stored for fast stack check
-    Math(MathOp, u8), 
+    Math(MathOp, u8),
 }

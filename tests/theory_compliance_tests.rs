@@ -44,7 +44,6 @@ fn test_simultaneous_topology_pairs() {
 
 #[test]
 fn test_ignore_and_define_directives() {
-    // [FIX] Added colon to match parser requirements
     let input_ignore = "#ignore : + - F";
     let (_, d1) = parse_directive(input_ignore).expect("Should parse ignore");
     if let Directive::Ignore(symbols) = d1 {

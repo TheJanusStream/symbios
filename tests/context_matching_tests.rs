@@ -6,7 +6,6 @@ use symbios::vm::VirtualMachine;
 fn setup_state(sys: &mut System, axiom: &str) {
     sys.set_axiom(axiom).expect("Failed to set axiom");
 
-    // FIX: Handle Result from hardened interner
     let open = sys.interner.get_or_intern("[").expect("Intern failed");
     let close = sys.interner.get_or_intern("]").expect("Intern failed");
 
@@ -22,13 +21,11 @@ fn test_stateless_context_1l_1r() {
 
     sys.add_rule("A < B > C -> X").unwrap();
 
-    // FIX: Clone rule to decouple from sys lifetime (E0502)
     let b_id = sys.interner.resolve_id("B").expect("B not interned");
     let rule = sys.rules[&b_id][0].clone();
 
     setup_state(&mut sys, "A B C");
 
-    // FIX: Use new 5-arg signature taking &RuntimeRule
     let is_match = matching::matches(
         &sys.state,
         1, // Index of 'B'
@@ -49,7 +46,6 @@ fn test_parametric_context_aggregation() {
     sys.add_rule("L(a) < P(b) > R(c) : a + b + c == 30 -> S")
         .unwrap();
 
-    // FIX: Lookup rule by symbol ID "P"
     let p_id = sys.interner.resolve_id("P").expect("P not interned");
     let rule = sys.rules.get(&p_id).unwrap()[0].clone();
 

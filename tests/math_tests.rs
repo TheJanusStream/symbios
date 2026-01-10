@@ -1,4 +1,3 @@
-/* tests/math_tests.rs */
 use symbios::System;
 
 #[test]

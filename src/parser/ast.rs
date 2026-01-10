@@ -22,7 +22,7 @@ pub enum Expr {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct ModuleSym {
-    pub symbol: String, // Upgraded from char to String for ABOP compliance
+    pub symbol: String,
     pub params: Vec<Expr>,
 }
 
@@ -39,6 +39,6 @@ pub struct Rule {
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum Directive {
-    Ignore(Vec<String>), // Context ignore list now supports named modules
+    Ignore(Vec<String>),
     Define(String, Expr),
 }
