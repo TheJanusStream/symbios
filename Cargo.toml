@@ -2,6 +2,12 @@
 name = "symbios"
 version = "0.1.0"
 edition = "2024"
+authors = ["Janus"]
+description = "A derivation engine for L-Systems (ABOP compliant)."
+license = "MIT"
+repository = "https://github.com/TheJanusStream/symbios"
+keywords = ["lsystem", "procedural", "generative", "simulation", "no-std"]
+categories = ["simulation", "game-development", "mathematics"]
 
 [dependencies]
 nom = "8.0.0"
@@ -12,3 +18,8 @@ serde = { version = "1.0", features = ["derive"] }
 
 [dev-dependencies]
 serde_json = "1.0"
+criterion = "0.5"
+
+[[bench]]
+name = "bench_main"
+harness = false

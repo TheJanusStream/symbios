@@ -23,30 +23,55 @@ pub enum SystemError {
     State(#[from] crate::core::SymbiosError),
 }
 
+/// A compiled successor module ready for generation.
+///
+/// Contains the symbol ID and the bytecode for evaluating its parameters.
 #[derive(Debug, Clone)]
 pub struct RuntimeModule {
     pub symbol: u16,
     pub params: Vec<Vec<Op>>,
 }
 
+/// A fully compiled L-System production rule.
+///
+/// This struct contains the optimized logic for matching (predecessor, context)
+/// and generation (successors, probability).
 #[derive(Debug, Clone)]
 pub struct RuntimeRule {
+    /// The ID of the symbol this rule replaces.
     pub predecessor: u16,
+    /// Sequence of symbol IDs required to the left.
     pub left_context: Vec<u16>,
+    /// Sequence of symbol IDs required to the right.
     pub right_context: Vec<u16>,
+    /// Stochastic probability (0.0 - 1.0).
     pub probability: f64,
+    /// Bytecode for the guard condition (evaluates to 1.0 for true).
     pub condition: Option<Vec<Op>>,
+    /// The sequence of modules to produce if matched.
     pub successors: Vec<RuntimeModule>,
+    /// Expected parameter counts for validation.
     pub expected_arities: Vec<usize>,
 }
 
+/// The primary interface for defining and simulating an L-System.
+///
+/// `System` coordinates the Parser, Interner, Virtual Machine, and State
+/// to execute derivations. It owns the rules and the current state of the simulation.
 pub struct System {
+    /// The symbol interner, mapping string identifiers to `u16` IDs.
     pub interner: SymbolTable,
+    /// The set of compiled rules, indexed by predecessor symbol ID.
     pub rules: HashMap<u16, Vec<RuntimeRule>>,
+    /// The current state of the simulation (the string of modules).
     pub state: SymbiosState,
+    /// A list of symbol IDs to ignore during context matching.
     pub ignored_symbols: Vec<u16>,
+    /// The random number generator (PCG64) for stochastic rules.
     pub rng: Pcg64,
+    /// Global constants defined via `#define`.
     pub constants: HashMap<String, f64>,
+    /// Safety limit for total module count to prevent OOM. Default: 1,000,000.
     pub max_capacity: usize,
 }
 
@@ -57,6 +82,7 @@ impl Default for System {
 }
 
 impl System {
+    /// Creates a new System with default settings and a deterministic seed.
     pub fn new() -> Self {
         Self {
             interner: SymbolTable::new(),
@@ -69,10 +95,18 @@ impl System {
         }
     }
 
+    /// Sets the random seed for stochastic rule selection.
     pub fn set_seed(&mut self, seed: u64) {
         self.rng = Pcg64::seed_from_u64(seed);
     }
 
+    /// Advances the system by `steps` generations.
+    ///
+    /// This method:
+    /// 1. Calculates topology (if brackets are present).
+    /// 2. Iterates through the current state.
+    /// 3. Matches rules (including context and guards).
+    /// 4. Generates the new state.
     pub fn derive(&mut self, steps: usize) -> Result<(), SystemError> {
         let mut vm = crate::vm::VirtualMachine::new();
         let open_sym = self.interner.resolve_id("[");
@@ -211,6 +245,7 @@ impl System {
         Ok(())
     }
 
+    /// Compiles and adds a rule to the system.
     pub fn add_rule(&mut self, rule_src: &str) -> Result<(), SystemError> {
         let (_, rule_ast) =
             parser::parse_rule(rule_src).map_err(|e| SystemError::ParseError(e.to_string()))?;
@@ -310,6 +345,7 @@ impl System {
         Ok(())
     }
 
+    /// Sets the initial state (axiom) of the system.
     pub fn set_axiom(&mut self, axiom_src: &str) -> Result<(), SystemError> {
         let mut remaining = axiom_src;
         self.state.clear();

@@ -31,6 +31,10 @@ struct ModuleData {
     topology_link: u32,
 }
 
+/// Represents the current state of the L-System simulation.
+///
+/// It stores the linear sequence of modules using a Structure-of-Arrays (SoA) layout
+/// to maximize cache locality and minimize allocation overhead.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SymbiosState {
     modules: Vec<ModuleData>,
@@ -63,6 +67,7 @@ impl SymbiosState {
         self.current_time = 0.0;
     }
 
+    /// Returns the number of modules in the current string.
     pub fn len(&self) -> usize {
         self.modules.len()
     }
@@ -71,6 +76,7 @@ impl SymbiosState {
         self.modules.is_empty()
     }
 
+    /// Appends a new module to the state.
     pub fn push(&mut self, symbol: u16, age: f64, parameters: &[f64]) -> Result<(), SymbiosError> {
         if self.modules.len() >= self.max_capacity {
             return Err(SymbiosError::CapacityOverflow);
@@ -99,6 +105,9 @@ impl SymbiosState {
         Ok(())
     }
 
+    /// Pre-calculates skip-links for branching structures.
+    ///
+    /// This enables O(1) context matching over branches.
     pub fn calculate_topology(
         &mut self,
         open_sym: u16,
@@ -130,6 +139,7 @@ impl SymbiosState {
         Ok(())
     }
 
+    /// Retrieves a read-only view of a specific module.
     pub fn get_view(&self, index: usize) -> Option<ModuleView<'_>> {
         let m = self.modules.get(index)?;
         let start = m.param_start as usize;
@@ -159,6 +169,7 @@ impl SymbiosState {
         Ok(())
     }
 
+    /// Returns a helper struct for formatting the state as a string.
     pub fn display<'a>(&'a self, interner: &'a SymbolTable) -> StateDisplay<'a> {
         StateDisplay {
             state: self,
@@ -200,6 +211,7 @@ impl<'a> fmt::Display for StateDisplay<'a> {
     }
 }
 
+/// A temporary view into a module's data.
 #[derive(Debug)]
 pub struct ModuleView<'a> {
     pub sym: u16,
