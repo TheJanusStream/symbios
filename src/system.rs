@@ -129,7 +129,33 @@ impl System {
                     let mut context_frame = Vec::new();
                     context_frame.extend_from_slice(view.params);
 
-                    // ... match_left/match_right logic ...
+                    if !rule.left_context.is_empty() {
+                        let mut left_indices = Vec::new();
+                        matching::match_left(
+                            &self.state,
+                            index,
+                            &rule.left_context,
+                            &self.ignored_symbols,
+                            &mut left_indices,
+                        );
+                        for &i in &left_indices {
+                            context_frame.extend_from_slice(self.state.get_view(i).unwrap().params);
+                        }
+                    }
+
+                    if !rule.right_context.is_empty() {
+                        let mut right_indices = Vec::new();
+                        matching::match_right(
+                            &self.state,
+                            index,
+                            &rule.right_context,
+                            &self.ignored_symbols,
+                            &mut right_indices,
+                        );
+                        for &i in &right_indices {
+                            context_frame.extend_from_slice(self.state.get_view(i).unwrap().params);
+                        }
+                    }
 
                     for successor in &rule.successors {
                         let mut new_params = Vec::new();
