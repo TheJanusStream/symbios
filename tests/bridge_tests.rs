@@ -18,8 +18,10 @@ fn test_bridge_compilation() {
     assert_eq!(system.interner.resolve(1), Some("B"));
     assert_eq!(system.interner.resolve(2), Some("C"));
 
+    let a_id = system.interner.resolve_id("A").unwrap();
+
     // Check Rule Structure
-    let rule = &system.rules[0];
+    let rule = &system.rules[&a_id][0];
     assert_eq!(rule.predecessor, 0); // Symbol A is 0
     assert_eq!(rule.expected_arities[0], 2); // x, y
 

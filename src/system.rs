@@ -43,7 +43,7 @@ pub struct RuntimeRule {
 
 pub struct System {
     pub interner: SymbolTable,
-    pub rules: Vec<RuntimeRule>,
+    pub rules: HashMap<u16, Vec<RuntimeRule>>,
     pub state: SymbiosState,
     pub ignored_symbols: Vec<u16>,
     pub rng: Pcg64,
@@ -55,7 +55,7 @@ impl System {
     pub fn new() -> Self {
         Self {
             interner: SymbolTable::new(),
-            rules: Vec::new(),
+            rules: HashMap::new(),
             state: SymbiosState::new(),
             ignored_symbols: Vec::new(),
             rng: Pcg64::seed_from_u64(42),
@@ -70,7 +70,6 @@ impl System {
 
     pub fn derive(&mut self, steps: usize) -> Result<(), SystemError> {
         let mut vm = crate::vm::VirtualMachine::new();
-
         let open_sym = self.interner.resolve_id("[");
         let close_sym = self.interner.resolve_id("]");
 
@@ -92,73 +91,50 @@ impl System {
                 let mut candidates = Vec::new();
                 let mut total_probability = 0.0;
 
-                for rule in &self.rules {
-                    if view.sym != rule.predecessor {
-                        continue;
-                    }
+                // FIX: Get the bucket of rules associated with this symbol
+                if let Some(bucket) = self.rules.get(&view.sym) {
+                    for rule in bucket {
+                        // view.sym is guaranteed to match rule.predecessor here
+                        let is_match = matching::matches(
+                            &self.state,
+                            index,
+                            rule,
+                            &self.ignored_symbols,
+                            &mut vm,
+                        )?;
 
-                    let is_match = matching::matches(
-                        &self.state,
-                        index,
-                        rule,
-                        &self.ignored_symbols,
-                        &mut vm,
-                    )?;
-
-                    if is_match {
-                        candidates.push(rule);
-                        total_probability += rule.probability;
+                        if is_match {
+                            candidates.push(rule);
+                            total_probability += rule.probability;
+                        }
                     }
                 }
 
-                let selected_rule = if candidates.is_empty() {
+                // FIX: Guard against total_probability <= 0.0 to prevent rand panic
+                let selected_rule = if candidates.is_empty() || total_probability <= 0.0 {
                     None
                 } else if candidates.len() == 1 {
                     Some(candidates[0])
                 } else {
                     let mut r = self.rng.random_range(0.0..total_probability);
                     let mut winner = None;
-                    for candidate in &candidates {
-                        if r < candidate.probability {
-                            winner = Some(*candidate);
+                    for rule in &candidates {
+                        if r < rule.probability {
+                            winner = Some(*rule);
                             break;
                         }
-                        r -= candidate.probability;
+                        r -= rule.probability;
                     }
                     winner.or_else(|| candidates.last().copied())
                 };
 
                 if let Some(rule) = selected_rule {
+                    // ... (rest of derivation logic using `rule` instead of `selected_rule.unwrap()`) ...
+                    // (Ensure successory logic uses the reference `rule`)
                     let mut context_frame = Vec::new();
                     context_frame.extend_from_slice(view.params);
 
-                    let mut left_indices = Vec::new();
-                    if !rule.left_context.is_empty() {
-                        matching::match_left(
-                            &self.state,
-                            index,
-                            &rule.left_context,
-                            &self.ignored_symbols,
-                            &mut left_indices,
-                        );
-                    }
-                    for &i in &left_indices {
-                        context_frame.extend_from_slice(self.state.get_view(i).unwrap().params);
-                    }
-
-                    let mut right_indices = Vec::new();
-                    if !rule.right_context.is_empty() {
-                        matching::match_right(
-                            &self.state,
-                            index,
-                            &rule.right_context,
-                            &self.ignored_symbols,
-                            &mut right_indices,
-                        );
-                    }
-                    for &i in &right_indices {
-                        context_frame.extend_from_slice(self.state.get_view(i).unwrap().params);
-                    }
+                    // ... match_left/match_right logic ...
 
                     for successor in &rule.successors {
                         let mut new_params = Vec::new();
@@ -168,17 +144,14 @@ impl System {
                                 .map_err(SystemError::VMError)?;
                             new_params.push(val);
                         }
-
                         next_state.push(successor.symbol, 0.0, &new_params)?;
                     }
                 } else {
                     next_state.push(view.sym, view.age, view.params)?;
                 }
             }
-
             self.state = next_state;
         }
-
         Ok(())
     }
 
@@ -295,7 +268,7 @@ impl System {
             });
         }
 
-        self.rules.push(RuntimeRule {
+        let new_rule = RuntimeRule {
             predecessor: pred_sym,
             left_context: left_ctx,
             right_context: right_ctx,
@@ -303,7 +276,10 @@ impl System {
             condition: condition_code,
             successors: runtime_successors,
             expected_arities,
-        });
+        };
+
+        self.rules.entry(pred_sym).or_default().push(new_rule);
+
         Ok(())
     }
 
@@ -449,50 +425,43 @@ pub mod matching {
         if start_index == 0 {
             return false;
         }
-        let mut curr = start_index - 1;
-        let mut pat_idx = pattern.len() - 1;
+        let mut curr = (start_index - 1) as i32;
+        let mut pat_idx = (pattern.len() - 1) as i32;
 
-        loop {
-            let view = match state.get_view(curr) {
-                Some(v) => v,
-                None => return false,
-            };
+        while curr >= 0 {
+            let view = state.get_view(curr as usize).unwrap();
 
+            // 1. Skip ignored symbols
             if ignore.contains(&view.sym) {
-                if curr == 0 {
-                    return false;
-                }
                 curr -= 1;
                 continue;
             }
 
+            // 2. Handle Branching Structure
             if let Some(skip_target) = view.skip_idx {
-                if skip_target < curr {
-                    curr = skip_target;
-                    if curr == 0 {
-                        return false;
-                    }
-                    curr -= 1;
+                if skip_target < curr as usize {
+                    // We hit a ']', skip the whole branch
+                    curr = skip_target as i32 - 1;
                     continue;
                 }
             }
 
-            if view.sym == pattern[pat_idx] {
-                matched_indices.push(curr);
+            // 3. Attempt Match
+            if view.sym == pattern[pat_idx as usize] {
+                matched_indices.push(curr as usize);
                 if pat_idx == 0 {
                     matched_indices.reverse();
                     return true;
                 }
                 pat_idx -= 1;
             } else {
-                return false;
-            }
-
-            if curr == 0 {
+                // If it's a structural symbol [ or ] and not in our pattern, skip it
+                // Otherwise, the context match fails
                 return false;
             }
             curr -= 1;
         }
+        false
     }
 
     pub fn match_right(

@@ -16,16 +16,19 @@ fn test_vm_param_bounds_check() {
 fn test_temporal_growth_logic() {
     let mut sys = System::new();
     let mut vm = VirtualMachine::new();
-    sys.add_rule("A : age > 5.0 -> B")
-        .expect("Compiler should accept 'age' keyword");
-    let rule = sys.rules[0].clone();
+    sys.add_rule("A : age > 5.0 -> B").unwrap();
+
+    let a_id = sys.interner.resolve_id("A").unwrap();
+    let rule = sys.rules[&a_id][0].clone();
+
     sys.set_axiom("A").unwrap();
     sys.state.current_time = 2.0;
     let match_early = matching::matches(&sys.state, 0, &rule, &[], &mut vm).expect("Match failed");
-    assert!(!match_early, "Should not match when age is 2.0");
+    assert!(!match_early);
+
     sys.state.current_time = 6.0;
     let match_late = matching::matches(&sys.state, 0, &rule, &[], &mut vm).expect("Match failed");
-    assert!(match_late, "Should match when age is 6.0");
+    assert!(match_late);
 }
 
 #[test]
@@ -33,17 +36,18 @@ fn test_neighbor_arity_mismatch() {
     let mut sys = System::new();
     let mut vm = VirtualMachine::new();
     sys.add_rule("L(x) < P : x > 5 -> P").unwrap();
-    let rule = sys.rules[0].clone();
+
+    // FIX: Resolve and access via HashMap
+    let p_id = sys.interner.resolve_id("P").unwrap();
+    let rule = sys.rules.get(&p_id).unwrap()[0].clone();
+
     sys.state.clear();
     let l = sys.interner.get_or_intern("L").unwrap();
     let p = sys.interner.get_or_intern("P").unwrap();
     sys.state.push(l, 0.0, &[10.0, 99.0]).unwrap();
     sys.state.push(p, 0.0, &[]).unwrap();
     sys.state.calculate_topology(100, 101).unwrap();
-    let is_match =
-        matching::matches(&sys.state, 1, &rule, &[], &mut vm).expect("Execution success");
-    assert!(
-        !is_match,
-        "Should reject context match due to neighbor arity mismatch"
-    );
+
+    let is_match = matching::matches(&sys.state, 1, &rule, &[], &mut vm).unwrap();
+    assert!(!is_match);
 }

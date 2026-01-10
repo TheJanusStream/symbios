@@ -8,7 +8,7 @@ fn test_1_stochastic_normalization() {
     sys.add_rule("0.1 : A -> C").unwrap();
 
     sys.set_seed(123);
-    let _ = sys.set_axiom("A A A A A A A A A A"); // 10 iterations
+    let _ = sys.set_axiom("A A A A A A A A A A").unwrap(); // 10 iterations
     sys.derive(1).unwrap();
 
     let output = format!("{}", sys.state.display(&sys.interner));

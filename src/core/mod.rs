@@ -151,13 +151,12 @@ impl SymbiosState {
         })
     }
 
-    pub fn advance_time(&mut self, dt: f64) {
-        if dt.is_finite() && dt >= 0.0 {
-            self.current_time += dt;
-        } else {
-            // In a real crate, we might return Result or log error.
-            // For now, silently ignoring invalid time steps prevents corruption.
+    pub fn advance_time(&mut self, dt: f64) -> Result<(), String> {
+        if !dt.is_finite() || dt < 0.0 {
+            return Err(format!("Invalid time step: {}", dt));
         }
+        self.current_time += dt;
+        Ok(())
     }
 
     pub fn display<'a>(&'a self, interner: &'a SymbolTable) -> StateDisplay<'a> {
@@ -179,19 +178,22 @@ impl<'a> fmt::Display for StateDisplay<'a> {
             if i > 0 {
                 write!(f, " ")?;
             }
-            let view = self.state.get_view(i).unwrap();
-            let sym_str = self.interner.resolve(view.sym).unwrap_or("?");
-            write!(f, "{}", sym_str)?;
+            if let Some(view) = self.state.get_view(i) {
+                let sym_str = self.interner.resolve(view.sym).unwrap_or("?");
+                write!(f, "{}", sym_str)?;
 
-            if !view.params.is_empty() {
-                write!(f, "(")?;
-                for (j, param) in view.params.iter().enumerate() {
-                    if j > 0 {
-                        write!(f, ", ")?;
+                if !view.params.is_empty() {
+                    write!(f, "(")?;
+                    for (j, param) in view.params.iter().enumerate() {
+                        if j > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{:.4}", param)?;
                     }
-                    write!(f, "{:.4}", param)?;
+                    write!(f, ")")?;
                 }
-                write!(f, ")")?;
+            } else {
+                write!(f, "ERR_VIEW")?;
             }
         }
         Ok(())

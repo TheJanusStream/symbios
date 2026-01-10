@@ -22,7 +22,7 @@ fn test_age_driven_growth() {
 
     // --- T = 4.0 ---
     // Advance time. Age becomes 4.0.
-    sys.state.advance_time(4.0);
+    sys.state.advance_time(4.0).unwrap();
 
     // Condition (4.0 >= 5.0) is FALSE.
     sys.derive(1).unwrap();
@@ -33,7 +33,7 @@ fn test_age_driven_growth() {
 
     // --- T = 6.0 ---
     // Advance time by 2.0. Total time = 6.0. Age = 6.0.
-    sys.state.advance_time(2.0);
+    sys.state.advance_time(2.0).unwrap();
 
     // Condition (6.0 >= 5.0) is TRUE.
     // Rule fires: A(10) -> B(10) C(10)
@@ -63,7 +63,7 @@ fn test_age_access_in_successor() {
     sys.set_axiom("A(0)").unwrap();
 
     // Advance time to 10.5
-    sys.state.advance_time(10.5);
+    sys.state.advance_time(10.5).unwrap();
 
     // Derive
     sys.derive(1).unwrap();

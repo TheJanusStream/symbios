@@ -10,7 +10,7 @@ fn test_continuous_time_advancement() {
     assert_eq!(system.state.get_view(0).unwrap().age, 0.0);
 
     // Advance time by 0.5 units
-    system.state.advance_time(0.5);
+    system.state.advance_time(0.5).unwrap();
 
     let view = system.state.get_view(0).unwrap();
     assert_eq!(view.age, 0.5);
