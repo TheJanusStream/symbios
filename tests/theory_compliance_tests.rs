@@ -137,3 +137,23 @@ fn test_topology_sentinel_collision() {
     state.push(open, 0.0, &[]).unwrap();
     assert!(state.get_view(0).unwrap().skip_idx.is_none());
 }
+
+#[test]
+fn test_abop_wildcard_condition() {
+    // Validates that 'A : * -> ...' syntax used in ABOP examples works
+    let input = "p1 : A : * -> A";
+    let (_, rule) = parse_rule(input).expect("Should parse ABOP wildcard style");
+    // Should be parsed as condition = 1.0 (True)
+    assert_eq!(rule.condition, Some(Expr::Number(1.0)));
+}
+
+#[test]
+fn test_abop_equality_syntax() {
+    // Validates that 't=0' is treated as equality check, not assignment
+    let input = "p2 : A(t) : t=1 -> A(t+1)";
+    let (_, rule) = parse_rule(input).expect("Should parse ABOP equality alias");
+    match rule.condition {
+        Some(Expr::Eq(_, _)) => (), // OK
+        _ => panic!("Expected Eq operator for '='"),
+    }
+}

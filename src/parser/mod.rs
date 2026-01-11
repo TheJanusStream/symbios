@@ -96,11 +96,13 @@ fn parse_relational(input: &str, depth: usize) -> IResult<&str, Expr> {
         tag::<&str, &str, Error<&str>>(">="),
         tag::<&str, &str, Error<&str>>("<"),
         tag::<&str, &str, Error<&str>>(">"),
+        // Added support for single '=' as alias for '=='
+        tag::<&str, &str, Error<&str>>("="),
     ));
     if let Ok((input, op)) = ws(op_parser).parse(input) {
         let (input, rhs) = parse_addition(input, depth)?;
         let res = match op {
-            "==" => Expr::Eq(Box::new(lhs), Box::new(rhs)),
+            "==" | "=" => Expr::Eq(Box::new(lhs), Box::new(rhs)),
             "!=" => Expr::Ne(Box::new(lhs), Box::new(rhs)),
             "<=" => Expr::Le(Box::new(lhs), Box::new(rhs)),
             ">=" => Expr::Ge(Box::new(lhs), Box::new(rhs)),
@@ -118,27 +120,20 @@ fn parse_addition(input: &str, depth: usize) -> IResult<&str, Expr> {
     let (mut input, mut acc) = parse_multiplication(input, depth)?;
 
     loop {
-        // Manual Lookahead Fix to prevent OneOf errors
-        // 1. Skip whitespace manually to check the next characters
         let (trimmed, _) = space_or_comment::<Error<&str>>(input).unwrap_or((input, ()));
 
-        // 2. Check for "->" explicitly (Exit Condition)
         if trimmed.starts_with("->") {
             break;
         }
 
-        // 3. Manual Operator Check
         let op_char = trimmed.chars().next();
         let op = match op_char {
             Some('+') => '+',
             Some('-') => '-',
-            _ => break, // Not an additive operator
+            _ => break,
         };
 
-        // 4. Consume the operator using parser to handle whitespace correctly
         let (next, _) = ws(c_char::<&str, Error<&str>>(op)).parse(input)?;
-
-        // 5. Parse RHS
         let (next, rhs) = parse_multiplication(next, depth)?;
 
         acc = match op {
@@ -296,7 +291,6 @@ fn parse_rule_structure(input: &str) -> IResult<&str, Rule> {
     // Right Context
     let (input, right_context) =
         if let Ok((next, _)) = ws(c_char::<&str, Error<&str>>('>')).parse(input) {
-            // Terminator is either ':' (condition) or '->' (successor)
             let term = alt((map(ws(c_char(':')), |_| ()), map(ws(tag("->")), |_| ())));
             let (next, (rc, _)) =
                 many_till::<&str, Error<&str>, _, _>(ws(parse_module), peek(term)).parse(next)?;
@@ -306,7 +300,12 @@ fn parse_rule_structure(input: &str) -> IResult<&str, Rule> {
         };
 
     // Condition
-    let (input, condition) = opt(preceded(ws(c_char(':')), parse_expr)).parse(input)?;
+    // Extended to support '*' as a wildcard for 1.0 (True)
+    let (input, condition) = opt(preceded(
+        ws(c_char(':')),
+        alt((map(ws(c_char('*')), |_| Expr::Number(1.0)), parse_expr)),
+    ))
+    .parse(input)?;
 
     // Arrow
     let (input, _) = ws(tag("->")).parse(input)?;
@@ -333,7 +332,7 @@ fn parse_rule_structure(input: &str) -> IResult<&str, Rule> {
     Ok((
         curr,
         Rule {
-            label: None, // Set by wrapper
+            label: None,
             probability,
             predecessor,
             left_context,
@@ -345,12 +344,6 @@ fn parse_rule_structure(input: &str) -> IResult<&str, Rule> {
 }
 
 pub fn parse_rule(input: &str) -> IResult<&str, Rule> {
-    // We use alt to handle the Label ambiguity.
-    // Path 1: "Label : RuleStructure"
-    // Path 2: "RuleStructure"
-    // If Path 1 fails (e.g. because the 'Label' was actually a Predecessor and the rest didn't match),
-    // we backtrack and try Path 2.
-
     alt((
         map(
             pair(

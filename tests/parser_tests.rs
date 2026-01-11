@@ -132,3 +132,32 @@ fn test_iterative_long_chain() {
         "Iterative parser should handle long flat chains"
     );
 }
+
+#[test]
+fn test_wildcard_condition_parsing() {
+    // Tests that '*' is parsed as 1.0 (True)
+    let input = "A : * -> B";
+    let (_, rule) = parse_rule(input).expect("Should parse wildcard condition");
+    assert_eq!(rule.condition, Some(Expr::Number(1.0)));
+}
+
+#[test]
+fn test_equality_alias_parsing() {
+    // Tests that '=' is accepted as '=='
+    let input = "A(d) : d=0 -> B";
+    let (_, rule) = parse_rule(input).expect("Should parse d=0 as Eq");
+    if let Some(Expr::Eq(lhs, rhs)) = rule.condition {
+        assert!(matches!(*lhs, Expr::Variable(_)));
+        assert!(matches!(*rhs, Expr::Number(_)));
+    } else {
+        panic!("Expected Expr::Eq");
+    }
+}
+
+#[test]
+fn test_explicit_equality_parsing() {
+    // Regression check: '==' should still work
+    let input = "A(d) : d==0 -> B";
+    let (_, rule) = parse_rule(input).expect("Should parse d==0 as Eq");
+    assert!(matches!(rule.condition, Some(Expr::Eq(_, _))));
+}
