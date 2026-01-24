@@ -65,6 +65,8 @@ pub struct System {
     pub rules: HashMap<u16, Vec<RuntimeRule>>,
     /// The current state of the simulation (the string of modules).
     pub state: SymbiosState,
+    /// Double-buffering target to prevent allocations during derivation.
+    back_buffer: SymbiosState,
     /// A list of symbol IDs to ignore during context matching.
     pub ignored_symbols: Vec<u16>,
     /// The random number generator (PCG64) for stochastic rules.
@@ -88,6 +90,7 @@ impl System {
             interner: SymbolTable::new(),
             rules: HashMap::new(),
             state: SymbiosState::new(),
+            back_buffer: SymbiosState::new(),
             ignored_symbols: Vec::new(),
             rng: Pcg64::seed_from_u64(42),
             constants: HashMap::new(),
@@ -117,9 +120,10 @@ impl System {
                 self.state.calculate_topology(o, c)?;
             }
 
-            let mut next_state = SymbiosState::new();
-            next_state.max_capacity = self.max_capacity;
-            next_state.current_time = self.state.current_time;
+            // Prepare back buffer: clear contents but keep capacity
+            self.back_buffer.clear();
+            self.back_buffer.max_capacity = self.max_capacity;
+            self.back_buffer.current_time = self.state.current_time;
 
             for index in 0..self.state.len() {
                 let view = self
@@ -205,13 +209,16 @@ impl System {
                                 .map_err(SystemError::VMError)?;
                             new_params.push(val);
                         }
-                        next_state.push(successor.symbol, 0.0, &new_params)?;
+                        self.back_buffer.push(successor.symbol, 0.0, &new_params)?;
                     }
                 } else {
-                    next_state.push(view.sym, view.age, view.params)?;
+                    // Identity rule
+                    self.back_buffer.push(view.sym, view.age, view.params)?;
                 }
             }
-            self.state = next_state;
+            // Swap buffers: back_buffer becomes the new state,
+            // current state becomes the recycled back_buffer for next step.
+            std::mem::swap(&mut self.state, &mut self.back_buffer);
         }
         Ok(())
     }
@@ -488,28 +495,13 @@ pub mod matching {
         if start_index == 0 {
             return false;
         }
-        let mut curr = (start_index - 1) as i32;
-        let mut pat_idx = (pattern.len() - 1) as i32;
+        let mut curr = (start_index - 1) as i64;
+        let mut pat_idx = (pattern.len() - 1) as i64;
 
         while curr >= 0 {
             let view = state.get_view(curr as usize).unwrap();
 
-            // 1. Skip ignored symbols
-            if ignore.contains(&view.sym) {
-                curr -= 1;
-                continue;
-            }
-
-            // 2. Handle Branching Structure
-            if let Some(skip_target) = view.skip_idx
-                && skip_target < curr as usize
-            {
-                // We hit a ']', skip the whole branch
-                curr = skip_target as i32 - 1;
-                continue;
-            }
-
-            // 3. Attempt Match
+            // 1. Attempt Match (Explicit context match takes priority)
             if view.sym == pattern[pat_idx as usize] {
                 matched_indices.push(curr as usize);
                 if pat_idx == 0 {
@@ -517,12 +509,33 @@ pub mod matching {
                     return true;
                 }
                 pat_idx -= 1;
-            } else {
-                // If it's a structural symbol [ or ] and not in our pattern, skip it
-                // Otherwise, the context match fails
-                return false;
+                curr -= 1;
+                continue;
             }
-            curr -= 1;
+
+            // 2. Structural Skipping (Topology Logic)
+            if let Some(skip_target) = view.skip_idx {
+                if skip_target < curr as usize {
+                    // We hit a ']', signifying the end of a sibling branch.
+                    // Jump to the start of the branch '['.
+                    curr = skip_target as i64 - 1;
+                    continue;
+                } else {
+                    // We hit a '[', signifying the start of the parent branch.
+                    // Transparently step over it.
+                    curr -= 1;
+                    continue;
+                }
+            }
+
+            // 3. Skip ignored symbols
+            if ignore.contains(&view.sym) {
+                curr -= 1;
+                continue;
+            }
+
+            // 4. Mismatch
+            return false;
         }
         false
     }
@@ -543,11 +556,7 @@ pub mod matching {
                 None => return false,
             };
 
-            if ignore.contains(&view.sym) {
-                curr += 1;
-                continue;
-            }
-
+            // 1. Attempt Match
             if view.sym == pattern[pat_idx] {
                 matched_indices.push(curr);
                 pat_idx += 1;
@@ -558,13 +567,28 @@ pub mod matching {
                 continue;
             }
 
-            if let Some(skip_target) = view.skip_idx
-                && skip_target > curr
-            {
-                curr = skip_target + 1;
+            // 2. Structural Skipping
+            if let Some(skip_target) = view.skip_idx {
+                if skip_target > curr {
+                    // We hit a '[', signifying the start of a sibling branch.
+                    // Jump to the end of the branch ']'.
+                    curr = skip_target + 1;
+                    continue;
+                } else {
+                    // We hit a ']', signifying the end of the parent branch.
+                    // Step over it to find the parent's right context.
+                    curr += 1;
+                    continue;
+                }
+            }
+
+            // 3. Skip ignored symbols
+            if ignore.contains(&view.sym) {
+                curr += 1;
                 continue;
             }
 
+            // 4. Mismatch
             return false;
         }
         false

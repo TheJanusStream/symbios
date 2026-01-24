@@ -20,6 +20,8 @@ pub enum SymbiosError {
     CapacityOverflow,
     #[error("Internal index out of bounds: {0}")]
     InvalidIndex(usize),
+    #[error("Non-finite numeric value detected (NaN/Inf)")]
+    InvalidNumericValue,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,6 +80,10 @@ impl SymbiosState {
 
     /// Appends a new module to the state.
     pub fn push(&mut self, symbol: u16, age: f64, parameters: &[f64]) -> Result<(), SymbiosError> {
+        if !age.is_finite() || parameters.iter().any(|p| !p.is_finite()) {
+            return Err(SymbiosError::InvalidNumericValue);
+        }
+
         if self.modules.len() >= self.max_capacity {
             return Err(SymbiosError::CapacityOverflow);
         }

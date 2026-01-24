@@ -1,6 +1,6 @@
 [package]
 name = "symbios"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2024"
 authors = ["Janus"]
 description = "A derivation engine for L-Systems (ABOP compliant)."
@@ -15,7 +15,7 @@ nom = "8.0.0"
 rand = "0.9.2"
 rand_pcg = "0.9.0"
 thiserror = "2.0.17"
-serde = { version = "1.0", features = ["derive"] }
+serde = { version = "1.0", features = ["derive", "rc"] }
 
 [dev-dependencies]
 serde_json = "1.0"
