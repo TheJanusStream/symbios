@@ -109,11 +109,6 @@ fn test_parameter_alignment_hazard() {
 
 #[test]
 fn test_child_cannot_see_parent() {
-    // CRITICAL DEFECT SCENARIO 1
-    // The Standard L-System Case: A [ B ]
-    // 'B' is a child branch of 'A'. In L-System definitions (ABOP),
-    // 'B' should be able to see 'A' as its left context.
-
     let mut sys = System::new();
 
     // Rule: If B is preceded by A, transform into Success (S)
@@ -125,13 +120,6 @@ fn test_child_cannot_see_parent() {
 
     let output = format!("{}", sys.state.display(&sys.interner));
 
-    // EXPECTED: "A [ S ]"
-    // ACTUAL:   "A [ B ]"
-    //
-    // WHY: In `src/system.rs`, `match_left` encounters `[`.
-    // It is not ignored. It is not a match for `A`.
-    // It is a start-of-branch, not an end-of-branch, so no skip link is taken.
-    // The function returns false immediately.
     assert_eq!(
         output, "A [ S ]",
         "Logic Defect: Module 'B' inside branch failed to see parent 'A' through '['."
