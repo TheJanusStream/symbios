@@ -235,7 +235,11 @@ fn parse_arg_list(input: &str, depth: usize) -> IResult<&str, Vec<Expr>> {
 }
 
 fn parse_symbol(input: &str) -> IResult<&str, String> {
-    alt((identifier, map(one_of("+-/&^[]|\\!$%~"), |c| c.to_string()))).parse(input)
+    alt((
+        identifier,
+        map(one_of("+-/&^[]|\\!$%~',@#;"), |c| c.to_string()),
+    ))
+    .parse(input)
 }
 
 pub fn parse_module(input: &str) -> IResult<&str, ModuleSym> {
