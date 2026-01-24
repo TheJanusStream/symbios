@@ -1,6 +1,6 @@
 [package]
 name = "symbios"
-version = "0.1.2"
+version = "1.0.0"
 edition = "2024"
 authors = ["Janus"]
 description = "A derivation engine for L-Systems (ABOP compliant)."
@@ -24,3 +24,6 @@ criterion = "0.5"
 [[bench]]
 name = "bench_main"
 harness = false
+
+[profile.bench]
+debug = true
