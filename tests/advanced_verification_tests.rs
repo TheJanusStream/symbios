@@ -144,14 +144,8 @@ fn test_7_ignore_with_named_modules() {
 
 #[test]
 fn test_8_ignore_list_breaks_topology() {
-    // CRITICAL DEFECT SCENARIO 2 (The Catch-22)
-    // Attempting to fix Scenario 1 by ignoring brackets breaks branch skipping.
-    // Structure: A [ B ] C
-    // 'C' is a sibling of 'B's branch. 'C' should see 'A'.
-
     let mut sys = System::new();
 
-    // The user attempts to "fix" the previous bug by ignoring brackets
     sys.add_directive("#ignore : [ ]").unwrap();
 
     // Rule: If C is preceded by A, transform into Success (S)
@@ -162,14 +156,6 @@ fn test_8_ignore_list_breaks_topology() {
 
     let output = format!("{}", sys.state.display(&sys.interner));
 
-    // EXPECTED: "A [ B ] S"
-    // ACTUAL:   "A [ B ] C"
-    //
-    // WHY: In `src/system.rs`, `match_left` starts at `C`.
-    // It moves left to `]`.
-    // `ignore.contains("]")` is true, so it `continue`s loop.
-    // It bypasses the `topology_link` check which is inside the loop *after* the ignore check.
-    // It lands on `B`. `B` != `A`. Match fails.
     assert_eq!(
         output, "A [ B ] S",
         "Logic Defect: Ignoring brackets bypassed the topology skip-link, causing 'C' to see 'B' instead of 'A'."
