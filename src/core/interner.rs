@@ -1,11 +1,11 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct SymbolTable {
-    to_id: HashMap<Rc<str>, u16>,
-    to_str: Vec<Rc<str>>,
+    to_id: HashMap<Arc<str>, u16>,
+    to_str: Vec<Arc<str>>,
     current_bytes: usize,
     max_bytes: usize,
 }
@@ -57,11 +57,11 @@ impl SymbolTable {
         self.current_bytes += name.len();
 
         // 3. Single Allocation
-        let rc_name: Rc<str> = Rc::from(name);
+        let arc_name: Arc<str> = Arc::from(name);
 
         // 4. Shared Ownership
-        self.to_id.insert(rc_name.clone(), id);
-        self.to_str.push(rc_name);
+        self.to_id.insert(arc_name.clone(), id);
+        self.to_str.push(arc_name);
 
         Ok(id)
     }
