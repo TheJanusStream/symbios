@@ -2,13 +2,12 @@
 
 **A Sovereign Derivation Engine for Parametric L-Systems.**
 
-Symbios is a pure-Rust, zero-dependency (core), high-performance engine for generating Lindenmayer Systems. It is designed for "Sovereign" applications where the logic must run locally, deterministically, and safely (e.g., WASM environments, embedded simulation).
+Symbios is a pure-Rust, high-performance engine for generating Lindenmayer Systems. It is designed for "Sovereign" applications where the logic must run locally, deterministically, and safely (e.g., WASM environments, embedded simulation).
 
 It fully implements the syntax and semantics described in *The Algorithmic Beauty of Plants* (Prusinkiewicz & Lindenmayer, 1990).
 
 ## Key Features
 
-*   **Sovereign Architecture**: Zero external dependencies for the core logic. No game engines, no heavy runtimes.
 *   **Structure-of-Arrays (SoA)**: Data layout optimized for cache locality and WASM memory limits.
 *   **Parametric & Context-Sensitive**: Full support for `(k,l)-systems`, arithmetic guards `A(x) : x > 5 -> ...`, and variable binding.
 *   **Adversarial Hardening**: Protected against recursion bombs, memory exhaustion, and floating-point fragility.
@@ -18,7 +17,7 @@ It fully implements the syntax and semantics described in *The Algorithmic Beaut
 
 ```toml
 [dependencies]
-symbios = "1.0.1"
+symbios = "1.0.2"
 ```
 
 ```rust
