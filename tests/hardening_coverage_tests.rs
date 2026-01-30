@@ -1,5 +1,5 @@
 use symbios::System;
-use symbios::system::matching;
+use symbios::system::matching::{self, MatchScratch};
 use symbios::vm::{Op, VirtualMachine};
 
 #[test]
@@ -16,6 +16,7 @@ fn test_vm_param_bounds_check() {
 fn test_temporal_growth_logic() {
     let mut sys = System::new();
     let mut vm = VirtualMachine::new();
+    let mut scratch = MatchScratch::new();
     sys.add_rule("A : age > 5.0 -> B").unwrap();
 
     let a_id = sys.interner.resolve_id("A").unwrap();
@@ -23,11 +24,13 @@ fn test_temporal_growth_logic() {
 
     sys.set_axiom("A").unwrap();
     sys.state.current_time = 2.0;
-    let match_early = matching::matches(&sys.state, 0, &rule, &[], &mut vm).expect("Match failed");
+    let match_early =
+        matching::matches(&sys.state, 0, &rule, &[], &mut vm, &mut scratch).expect("Match failed");
     assert!(!match_early);
 
     sys.state.current_time = 6.0;
-    let match_late = matching::matches(&sys.state, 0, &rule, &[], &mut vm).expect("Match failed");
+    let match_late =
+        matching::matches(&sys.state, 0, &rule, &[], &mut vm, &mut scratch).expect("Match failed");
     assert!(match_late);
 }
 
@@ -35,6 +38,7 @@ fn test_temporal_growth_logic() {
 fn test_neighbor_arity_mismatch() {
     let mut sys = System::new();
     let mut vm = VirtualMachine::new();
+    let mut scratch = MatchScratch::new();
     sys.add_rule("L(x) < P : x > 5 -> P").unwrap();
 
     // FIX: Resolve and access via HashMap
@@ -48,6 +52,6 @@ fn test_neighbor_arity_mismatch() {
     sys.state.push(p, 0.0, &[]).unwrap();
     sys.state.calculate_topology(100, 101).unwrap();
 
-    let is_match = matching::matches(&sys.state, 1, &rule, &[], &mut vm).unwrap();
+    let is_match = matching::matches(&sys.state, 1, &rule, &[], &mut vm, &mut scratch).unwrap();
     assert!(!is_match);
 }

@@ -1,13 +1,13 @@
 [package]
 name = "symbios"
-version = "1.0.2"
+version = "1.0.3"
 edition = "2024"
 authors = ["Janus"]
 description = "A derivation engine for L-Systems (ABOP compliant)."
 license = "MIT"
 readme = "README.md"
 repository = "https://github.com/TheJanusStream/symbios"
-keywords = ["lsystem", "procedural", "generative", "simulation", "no-std"]
+keywords = ["lsystem", "procedural", "generative", "simulation"]
 categories = ["simulation", "game-development", "mathematics"]
 
 [dependencies]

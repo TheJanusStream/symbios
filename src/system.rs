@@ -75,6 +75,16 @@ pub struct System {
     pub constants: HashMap<String, f64>,
     /// Safety limit for total module count to prevent OOM. Default: 1,000,000.
     pub max_capacity: usize,
+    /// Reusable scratch buffers for zero-allocation matching.
+    scratch: matching::MatchScratch,
+    /// Reusable buffer for context frame during successor generation.
+    gen_context_frame: Vec<f64>,
+    /// Reusable buffer for left indices during successor generation.
+    gen_left_indices: Vec<usize>,
+    /// Reusable buffer for right indices during successor generation.
+    gen_right_indices: Vec<usize>,
+    /// Reusable buffer for successor parameters.
+    gen_new_params: Vec<f64>,
 }
 
 impl Default for System {
@@ -95,6 +105,11 @@ impl System {
             rng: Pcg64::seed_from_u64(42),
             constants: HashMap::new(),
             max_capacity: 1_000_000,
+            scratch: matching::MatchScratch::new(),
+            gen_context_frame: Vec::new(),
+            gen_left_indices: Vec::new(),
+            gen_right_indices: Vec::new(),
+            gen_new_params: Vec::new(),
         }
     }
 
@@ -131,7 +146,7 @@ impl System {
                     .get_view(index)
                     .ok_or(crate::core::SymbiosError::InvalidIndex(index))?;
 
-                let mut candidates = Vec::new();
+                let mut candidates: Vec<&RuntimeRule> = Vec::new();
                 let mut total_probability = 0.0;
 
                 if let Some(bucket) = self.rules.get(&view.sym) {
@@ -143,6 +158,7 @@ impl System {
                             rule,
                             &self.ignored_symbols,
                             &mut vm,
+                            &mut self.scratch,
                         )?;
 
                         if is_match {
@@ -170,46 +186,50 @@ impl System {
                 };
 
                 if let Some(rule) = selected_rule {
-                    let mut context_frame = Vec::new();
-                    context_frame.extend_from_slice(view.params);
+                    // Clear and reuse generation buffers
+                    self.gen_context_frame.clear();
+                    self.gen_context_frame.extend_from_slice(view.params);
 
                     if !rule.left_context.is_empty() {
-                        let mut left_indices = Vec::new();
+                        self.gen_left_indices.clear();
                         matching::match_left(
                             &self.state,
                             index,
                             &rule.left_context,
                             &self.ignored_symbols,
-                            &mut left_indices,
+                            &mut self.gen_left_indices,
                         );
-                        for &i in &left_indices {
-                            context_frame.extend_from_slice(self.state.get_view(i).unwrap().params);
+                        for &i in &self.gen_left_indices {
+                            self.gen_context_frame
+                                .extend_from_slice(self.state.get_view(i).unwrap().params);
                         }
                     }
 
                     if !rule.right_context.is_empty() {
-                        let mut right_indices = Vec::new();
+                        self.gen_right_indices.clear();
                         matching::match_right(
                             &self.state,
                             index,
                             &rule.right_context,
                             &self.ignored_symbols,
-                            &mut right_indices,
+                            &mut self.gen_right_indices,
                         );
-                        for &i in &right_indices {
-                            context_frame.extend_from_slice(self.state.get_view(i).unwrap().params);
+                        for &i in &self.gen_right_indices {
+                            self.gen_context_frame
+                                .extend_from_slice(self.state.get_view(i).unwrap().params);
                         }
                     }
 
                     for successor in &rule.successors {
-                        let mut new_params = Vec::new();
+                        self.gen_new_params.clear();
                         for param_code in &successor.params {
                             let val = vm
-                                .eval(param_code, &context_frame, view.age)
+                                .eval(param_code, &self.gen_context_frame, view.age)
                                 .map_err(SystemError::VMError)?;
-                            new_params.push(val);
+                            self.gen_new_params.push(val);
                         }
-                        self.back_buffer.push(successor.symbol, 0.0, &new_params)?;
+                        self.back_buffer
+                            .push(successor.symbol, 0.0, &self.gen_new_params)?;
                     }
                 } else {
                     // Identity rule
@@ -404,13 +424,42 @@ pub mod matching {
     use crate::system::{RuntimeRule, SystemError};
     use crate::vm::VirtualMachine;
 
+    /// Scratch buffers for zero-allocation rule matching.
+    ///
+    /// Reuse this struct across multiple `matches` calls to avoid
+    /// per-call allocations. Call `clear()` before each use.
+    #[derive(Debug, Default)]
+    pub struct MatchScratch {
+        pub context_frame: Vec<f64>,
+        pub left_indices: Vec<usize>,
+        pub right_indices: Vec<usize>,
+    }
+
+    impl MatchScratch {
+        pub fn new() -> Self {
+            Self::default()
+        }
+
+        /// Clears all buffers while preserving capacity.
+        #[inline]
+        pub fn clear(&mut self) {
+            self.context_frame.clear();
+            self.left_indices.clear();
+            self.right_indices.clear();
+        }
+    }
+
     pub fn matches(
         state: &SymbiosState,
         index: usize,
         rule: &RuntimeRule,
         ignore: &[u16],
         vm: &mut VirtualMachine,
+        scratch: &mut MatchScratch,
     ) -> Result<bool, SystemError> {
+        // Clear scratch buffers (preserves capacity)
+        scratch.clear();
+
         let pred_view = state
             .get_view(index)
             .ok_or(SystemError::InvalidPredecessorParam)?;
@@ -423,27 +472,31 @@ pub mod matching {
             return Ok(false);
         }
 
-        let mut left_indices = Vec::new();
         if !rule.left_context.is_empty()
-            && !match_left(state, index, &rule.left_context, ignore, &mut left_indices)
+            && !match_left(
+                state,
+                index,
+                &rule.left_context,
+                ignore,
+                &mut scratch.left_indices,
+            )
         {
             return Ok(false);
         }
 
-        let mut right_indices = Vec::new();
         if !rule.right_context.is_empty()
             && !match_right(
                 state,
                 index,
                 &rule.right_context,
                 ignore,
-                &mut right_indices,
+                &mut scratch.right_indices,
             )
         {
             return Ok(false);
         }
 
-        for (i, &ctx_idx) in left_indices.iter().enumerate() {
+        for (i, &ctx_idx) in scratch.left_indices.iter().enumerate() {
             let view = state
                 .get_view(ctx_idx)
                 .ok_or(SystemError::InvalidPredecessorParam)?;
@@ -453,7 +506,7 @@ pub mod matching {
         }
 
         let right_offset = 1 + rule.left_context.len();
-        for (i, &ctx_idx) in right_indices.iter().enumerate() {
+        for (i, &ctx_idx) in scratch.right_indices.iter().enumerate() {
             let view = state
                 .get_view(ctx_idx)
                 .ok_or(SystemError::InvalidPredecessorParam)?;
@@ -463,18 +516,21 @@ pub mod matching {
         }
 
         if let Some(code) = &rule.condition {
-            let mut context_frame = Vec::new();
-            context_frame.extend_from_slice(pred_view.params);
+            scratch.context_frame.extend_from_slice(pred_view.params);
 
-            for &i in &left_indices {
-                context_frame.extend_from_slice(state.get_view(i).unwrap().params);
+            for &i in &scratch.left_indices {
+                scratch
+                    .context_frame
+                    .extend_from_slice(state.get_view(i).unwrap().params);
             }
-            for &i in &right_indices {
-                context_frame.extend_from_slice(state.get_view(i).unwrap().params);
+            for &i in &scratch.right_indices {
+                scratch
+                    .context_frame
+                    .extend_from_slice(state.get_view(i).unwrap().params);
             }
 
             let res = vm
-                .eval(code, &context_frame, pred_view.age)
+                .eval(code, &scratch.context_frame, pred_view.age)
                 .map_err(SystemError::CompileError)?;
 
             if res == 0.0 {
