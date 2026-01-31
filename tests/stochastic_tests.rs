@@ -84,3 +84,76 @@ fn test_stochastic_branching() {
     let cs = state_3.iter().filter(|&s| s == "C").count();
     assert!(bs > 0 && cs > 0, "Should have mix of B and C");
 }
+
+#[test]
+fn test_stochastic_weight_sensitivity() {
+    let mut sys = System::new();
+
+    // Case 1: Skewed towards B
+    sys.set_seed(42);
+    sys.state.clear();
+    sys.rules.clear();
+    sys.add_rule("0.9 : A -> B").unwrap();
+    sys.add_rule("0.1 : A -> C").unwrap();
+    sys.set_axiom("A A A A A A A A A A").unwrap();
+    sys.derive(1).unwrap();
+    let out1 = format!("{}", sys.state.display(&sys.interner));
+
+    // Case 2: Skewed towards C
+    sys.set_seed(42);
+    sys.state.clear();
+    sys.rules.clear();
+    sys.add_rule("0.1 : A -> B").unwrap();
+    sys.add_rule("0.9 : A -> C").unwrap();
+    sys.set_axiom("A A A A A A A A A A").unwrap();
+
+    // RESET SEED to ensure 'r' sequence is identical
+    sys.set_seed(42);
+    sys.derive(1).unwrap();
+    let out2 = format!("{}", sys.state.display(&sys.interner));
+
+    // If out1 == out2, the bug is reproduced (weights ignored)
+    assert_ne!(
+        out1, out2,
+        "Stochastic output was identical despite weight inversion!\nOut1: {}\nOut2: {}",
+        out1, out2
+    );
+}
+
+#[test]
+fn test_labeled_mid_probability_syntax() {
+    let mut sys = System::new();
+
+    // User Requested Syntax: p1: A : 0.1 -> B
+    // Hypothesis: The parser sees '0.1' as a CONDITION (Predecessor : Condition -> Successor).
+    // Since 0.1 != 0.0, the condition is TRUE.
+    // The actual probability defaults to 1.0.
+
+    sys.add_rule("p1: A : 0.1 -> B").unwrap();
+    sys.add_rule("p2: A : 0.9 -> C").unwrap();
+
+    sys.set_seed(42);
+    sys.set_axiom("A A A A A A A A A A").unwrap();
+    sys.derive(1).unwrap();
+
+    let output = format!("{}", sys.state.display(&sys.interner));
+    let b_count = output.matches("B").count();
+    let c_count = output.matches("C").count();
+
+    println!(
+        "Distribution for 'p1: A : 0.1 -> B': B={}, C={}",
+        b_count, c_count
+    );
+
+    // If weights were working, C should dominate B (9:1 ratio).
+    // If bug exists (parsed as condition), ratios will be ~50/50 (random choice between two valid rules with prob 1.0).
+
+    // We ASSERT that it works as intended (expecting the test to likely fail or show the bug)
+    // A loose check: C should be at least double B
+    assert!(
+        c_count > b_count,
+        "Weights appeared to be ignored! Got B:{} C:{} (Expected C dominance)",
+        b_count,
+        c_count
+    );
+}

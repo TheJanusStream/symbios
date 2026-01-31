@@ -311,6 +311,10 @@ fn parse_rule_structure(input: &str) -> IResult<&str, Rule> {
     ))
     .parse(input)?;
 
+    if let Some(Expr::Number(n)) = condition {
+        probability = n;
+    }
+
     // Arrow
     let (input, _) = ws(tag("->")).parse(input)?;
 
