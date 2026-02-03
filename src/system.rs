@@ -21,6 +21,8 @@ pub enum SystemError {
     VMError(String),
     #[error("State error: {0}")]
     State(#[from] crate::core::SymbiosError),
+    #[error("Internal state corruption: invalid index {0}")]
+    StateCorruption(usize),
 }
 
 /// A compiled successor module ready for generation.
@@ -44,7 +46,17 @@ pub struct RuntimeRule {
     pub left_context: Vec<u16>,
     /// Sequence of symbol IDs required to the right.
     pub right_context: Vec<u16>,
-    /// Stochastic probability (0.0 - 1.0).
+    /// Stochastic weight for rule selection (typically 0.0 - 1.0).
+    ///
+    /// **Important**: This value is a *relative weight*, not an absolute probability.
+    /// When multiple rules match the same module, their weights are summed and each
+    /// rule's chance of being selected is `weight / total_weight`.
+    ///
+    /// This means:
+    /// - A single rule with weight 0.3 will fire 100% of the time (not 30%)
+    /// - Two rules with weights 0.3 and 0.7 fire with 30% and 70% probability respectively
+    /// - To implement "30% chance to transform, 70% identity", use two rules:
+    ///   `0.3: A -> B` and `0.7: A -> A`
     pub probability: f64,
     /// Bytecode for the guard condition (evaluates to 1.0 for true).
     pub condition: Option<Vec<Op>>,
@@ -87,6 +99,9 @@ pub struct System {
     gen_new_params: Vec<f64>,
     /// Stored initial axiom state for reset functionality.
     initial_state: Option<SymbiosState>,
+    /// Known arities for symbols (symbol ID -> expected parameter count).
+    /// Used by structural mutation to initialize inserted modules correctly.
+    symbol_arities: HashMap<u16, usize>,
 }
 
 impl Default for System {
@@ -113,6 +128,7 @@ impl System {
             gen_right_indices: Vec::new(),
             gen_new_params: Vec::new(),
             initial_state: None,
+            symbol_arities: HashMap::new(),
         }
     }
 
@@ -128,6 +144,16 @@ impl System {
     /// 2. Iterates through the current state.
     /// 3. Matches rules (including context and guards).
     /// 4. Generates the new state.
+    ///
+    /// # Stochastic Rule Selection
+    ///
+    /// When multiple rules match a module, selection uses *relative weights*:
+    /// - All matching rules' probabilities are summed to `total_weight`
+    /// - Each rule is selected with probability `rule.probability / total_weight`
+    /// - A single matching rule always fires (even with probability < 1.0)
+    ///
+    /// To implement probabilistic identity (e.g., "30% chance to transform"),
+    /// define an explicit identity rule: `0.7: A -> A` alongside `0.3: A -> B`.
     pub fn derive(&mut self, steps: usize) -> Result<(), SystemError> {
         let mut vm = crate::vm::VirtualMachine::new();
         let open_sym = self.interner.resolve_id("[");
@@ -203,8 +229,11 @@ impl System {
                             &mut self.gen_left_indices,
                         );
                         for &i in &self.gen_left_indices {
-                            self.gen_context_frame
-                                .extend_from_slice(self.state.get_view(i).unwrap().params);
+                            let ctx_view = self
+                                .state
+                                .get_view(i)
+                                .ok_or(SystemError::StateCorruption(i))?;
+                            self.gen_context_frame.extend_from_slice(ctx_view.params);
                         }
                     }
 
@@ -218,8 +247,11 @@ impl System {
                             &mut self.gen_right_indices,
                         );
                         for &i in &self.gen_right_indices {
-                            self.gen_context_frame
-                                .extend_from_slice(self.state.get_view(i).unwrap().params);
+                            let ctx_view = self
+                                .state
+                                .get_view(i)
+                                .ok_or(SystemError::StateCorruption(i))?;
+                            self.gen_context_frame.extend_from_slice(ctx_view.params);
                         }
                     }
 
@@ -360,6 +392,9 @@ impl System {
             });
         }
 
+        // Track symbol arity for structural mutation (before moving expected_arities)
+        let pred_arity = expected_arities[0];
+
         let new_rule = RuntimeRule {
             predecessor: pred_sym,
             left_context: left_ctx,
@@ -370,6 +405,7 @@ impl System {
             expected_arities,
         };
 
+        self.symbol_arities.insert(pred_sym, pred_arity);
         self.rules.entry(pred_sym).or_default().push(new_rule);
 
         Ok(())
@@ -555,14 +591,12 @@ pub mod matching {
             scratch.context_frame.extend_from_slice(pred_view.params);
 
             for &i in &scratch.left_indices {
-                scratch
-                    .context_frame
-                    .extend_from_slice(state.get_view(i).unwrap().params);
+                let ctx_view = state.get_view(i).ok_or(SystemError::StateCorruption(i))?;
+                scratch.context_frame.extend_from_slice(ctx_view.params);
             }
             for &i in &scratch.right_indices {
-                scratch
-                    .context_frame
-                    .extend_from_slice(state.get_view(i).unwrap().params);
+                let ctx_view = state.get_view(i).ok_or(SystemError::StateCorruption(i))?;
+                scratch.context_frame.extend_from_slice(ctx_view.params);
             }
 
             let res = vm
@@ -591,7 +625,10 @@ pub mod matching {
         let mut pat_idx = (pattern.len() - 1) as i64;
 
         while curr >= 0 {
-            let view = state.get_view(curr as usize).unwrap();
+            let view = match state.get_view(curr as usize) {
+                Some(v) => v,
+                None => return false, // Defensive: invalid index means no match
+            };
 
             // 1. Attempt Match (Explicit context match takes priority)
             if view.sym == pattern[pat_idx as usize] {
@@ -704,6 +741,7 @@ impl Clone for System {
             gen_right_indices: Vec::new(),
             gen_new_params: Vec::new(),
             initial_state: self.initial_state.clone(),
+            symbol_arities: self.symbol_arities.clone(),
         }
     }
 }
@@ -1051,10 +1089,10 @@ impl System {
                 // Insert a new module at a random position
                 if rng.random::<f64>() < config.insert_rate {
                     let symbol = symbol_ids[rng.random_range(0..symbol_ids.len())];
-                    let new_module = RuntimeModule {
-                        symbol,
-                        params: Vec::new(),
-                    };
+                    // Initialize with correct arity: one Op::Push(0.0) per expected parameter
+                    let arity = self.symbol_arities.get(&symbol).copied().unwrap_or(0);
+                    let params: Vec<Vec<Op>> = (0..arity).map(|_| vec![Op::Push(0.0)]).collect();
+                    let new_module = RuntimeModule { symbol, params };
                     let idx = rng.random_range(0..=rule.successors.len());
                     rule.successors.insert(idx, new_module);
                 }

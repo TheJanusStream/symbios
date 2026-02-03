@@ -88,8 +88,15 @@ impl SymbiosState {
             return Err(SymbiosError::CapacityOverflow);
         }
 
+        // Use checked arithmetic to prevent overflow on 32-bit architectures
+        let new_params_len = self
+            .params
+            .len()
+            .checked_add(parameters.len())
+            .ok_or(SymbiosError::CapacityOverflow)?;
+
         if self.modules.len() >= (u32::MAX as usize - 1)
-            || (self.params.len() + parameters.len()) >= (u32::MAX as usize - 1)
+            || new_params_len >= (u32::MAX as usize - 1)
         {
             return Err(SymbiosError::CapacityOverflow);
         }

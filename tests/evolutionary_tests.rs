@@ -721,3 +721,93 @@ fn test_structural_mutate_empty_interner_safe() {
     let config = StructuralMutationConfig::default();
     sys.structural_mutate(&config);
 }
+
+/// Tests that structural mutation respects symbol arity when inserting modules.
+///
+/// This addresses the "Structural Mutation Arity Mismatch" issue: when inserting
+/// a new module, it must have the correct number of parameters to match the
+/// symbol's expected arity, preventing "junk" modules that would fail matching.
+#[test]
+fn test_structural_mutate_insert_respects_arity() {
+    use rand::SeedableRng;
+    use rand_pcg::Pcg64;
+
+    let mut sys = System::new();
+    // Define a rule with a parameterized symbol (arity 2)
+    sys.add_rule("A(x, y) -> A(x + 1, y)").unwrap();
+    sys.set_axiom("A(1, 2)").unwrap();
+
+    let a_sym = sys.interner.resolve_id("A").unwrap();
+
+    // Record original successor count per rule
+    let original_counts: Vec<usize> = sys.rules[&a_sym]
+        .iter()
+        .map(|r| r.successors.len())
+        .collect();
+
+    // Force insertion with a predictable RNG
+    let config = StructuralMutationConfig {
+        successor_rate: 1.0,
+        swap_rate: 0.0,
+        insert_rate: 1.0,
+        delete_rate: 0.0,
+        bytecode_rate: 0.0,
+        op_rate: 0.0,
+        push_perturbation: 0.0,
+    };
+
+    // Run multiple mutations to ensure we insert modules
+    for seed in 0..20 {
+        let mut test_sys = sys.clone();
+        let mut rng = Pcg64::seed_from_u64(seed);
+        test_sys.structural_mutate_with_rng(&mut rng, &config);
+
+        // Check that inserted modules (beyond original count) have correct arity
+        for (rule_idx, rule) in test_sys.rules[&a_sym].iter().enumerate() {
+            let original_count = original_counts[rule_idx];
+            // All successors beyond original count are inserted
+            for (succ_idx, successor) in rule.successors.iter().enumerate() {
+                // Only check modules that could be inserted (by position or new ones)
+                // With insert_rate=1.0, exactly one module is inserted per rule per mutation
+                if succ_idx >= original_count || rule.successors.len() > original_count {
+                    // Inserted modules for symbol A should have 2 parameters
+                    if successor.symbol == a_sym {
+                        assert_eq!(
+                            successor.params.len(),
+                            2,
+                            "Inserted module for A should have 2 params (seed {})",
+                            seed
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Tests that inserted modules with correct arity can be evaluated without errors.
+#[test]
+fn test_structural_mutate_inserted_modules_are_functional() {
+    let mut sys = System::new();
+    sys.add_rule("A(x) -> A(x + 1)").unwrap();
+    sys.set_axiom("A(0)").unwrap();
+
+    let config = StructuralMutationConfig {
+        successor_rate: 1.0,
+        swap_rate: 0.0,
+        insert_rate: 1.0,
+        delete_rate: 0.0,
+        bytecode_rate: 0.0,
+        op_rate: 0.0,
+        push_perturbation: 0.0,
+    };
+
+    sys.structural_mutate(&config);
+
+    // Derivation should not fail due to parameter count mismatch
+    let result = sys.derive(3);
+    assert!(
+        result.is_ok(),
+        "Derivation should succeed with properly initialized inserted modules"
+    );
+}

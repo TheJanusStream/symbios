@@ -101,10 +101,20 @@ impl VirtualMachine {
                 Op::Ne => self
                     .compare_op(|a, b| !float_eq(a, b))
                     .map_err(|e| e.to_string())?,
-                Op::Gt => self.compare_op(|a, b| a > b).map_err(|e| e.to_string())?,
-                Op::Lt => self.compare_op(|a, b| a < b).map_err(|e| e.to_string())?,
-                Op::Ge => self.compare_op(|a, b| a >= b).map_err(|e| e.to_string())?,
-                Op::Le => self.compare_op(|a, b| a <= b).map_err(|e| e.to_string())?,
+                // Epsilon-aware comparisons for mathematical consistency:
+                // If float_eq(a, b), then Ge/Le must be true and Gt/Lt must be false.
+                Op::Gt => self
+                    .compare_op(|a, b| a > b && !float_eq(a, b))
+                    .map_err(|e| e.to_string())?,
+                Op::Lt => self
+                    .compare_op(|a, b| a < b && !float_eq(a, b))
+                    .map_err(|e| e.to_string())?,
+                Op::Ge => self
+                    .compare_op(|a, b| a >= b || float_eq(a, b))
+                    .map_err(|e| e.to_string())?,
+                Op::Le => self
+                    .compare_op(|a, b| a <= b || float_eq(a, b))
+                    .map_err(|e| e.to_string())?,
                 Op::And => self
                     .binary_op(|a, b| if a != 0.0 && b != 0.0 { 1.0 } else { 0.0 })
                     .map_err(|e| e.to_string())?,

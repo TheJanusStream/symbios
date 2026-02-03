@@ -66,3 +66,80 @@ fn test_stack_underflow_protection() {
     assert!(res.is_err());
     assert_eq!(res.unwrap_err(), "Stack underflow");
 }
+
+/// Tests that comparison operators maintain mathematical consistency with epsilon-based equality.
+///
+/// This addresses the "Comparison Consistency Violation" issue: if two numbers are
+/// "equal" via float_eq (epsilon tolerance), then Ge and Le must also return true.
+/// Mathematical transitivity requires: (a == b) implies (a >= b) and (a <= b).
+#[test]
+fn test_comparison_epsilon_consistency() {
+    use symbios::vm::float_eq;
+
+    let mut vm = VirtualMachine::new();
+
+    // Two values that are "equal" via epsilon but not strictly equal
+    let a = 1.0;
+    let b = 1.0 + f64::EPSILON * 10.0; // Within epsilon tolerance
+
+    // Verify they ARE considered equal by float_eq
+    assert!(float_eq(a, b), "a and b should be epsilon-equal");
+
+    // Test Eq returns true (should pass by design)
+    let code_eq = vec![Op::Push(a), Op::Push(b), Op::Eq];
+    assert_eq!(
+        vm.eval(&code_eq, &[], 0.0).unwrap(),
+        1.0,
+        "Eq should return true for epsilon-equal values"
+    );
+
+    // Test Ge: if a == b (epsilon), then a >= b must be true
+    let code_ge = vec![Op::Push(a), Op::Push(b), Op::Ge];
+    assert_eq!(
+        vm.eval(&code_ge, &[], 0.0).unwrap(),
+        1.0,
+        "Ge should return true when a is epsilon-equal to b"
+    );
+
+    // Test Le: if a == b (epsilon), then a <= b must be true
+    let code_le = vec![Op::Push(a), Op::Push(b), Op::Le];
+    assert_eq!(
+        vm.eval(&code_le, &[], 0.0).unwrap(),
+        1.0,
+        "Le should return true when a is epsilon-equal to b"
+    );
+
+    // Test Gt: if a == b (epsilon), then a > b must be false
+    let code_gt = vec![Op::Push(a), Op::Push(b), Op::Gt];
+    assert_eq!(
+        vm.eval(&code_gt, &[], 0.0).unwrap(),
+        0.0,
+        "Gt should return false when a is epsilon-equal to b"
+    );
+
+    // Test Lt: if a == b (epsilon), then a < b must be false
+    let code_lt = vec![Op::Push(a), Op::Push(b), Op::Lt];
+    assert_eq!(
+        vm.eval(&code_lt, &[], 0.0).unwrap(),
+        0.0,
+        "Lt should return false when a is epsilon-equal to b"
+    );
+
+    // Test strict inequality still works for clearly different values
+    let clearly_greater = 2.0;
+    let clearly_less = 0.5;
+
+    let code_gt_clear = vec![Op::Push(clearly_greater), Op::Push(a), Op::Gt];
+    assert_eq!(
+        vm.eval(&code_gt_clear, &[], 0.0).unwrap(),
+        1.0,
+        "Gt should return true for clearly greater values"
+    );
+
+    let code_lt_clear = vec![Op::Push(clearly_less), Op::Push(a), Op::Lt];
+    assert_eq!(
+        vm.eval(&code_lt_clear, &[], 0.0).unwrap(),
+        1.0,
+        "Lt should return true for clearly lesser values"
+    );
+}
