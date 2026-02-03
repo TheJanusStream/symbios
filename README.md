@@ -17,7 +17,7 @@ It fully implements the syntax and semantics described in *The Algorithmic Beaut
 
 ```toml
 [dependencies]
-symbios = "1.1"
+symbios = "1.2"
 ```
 
 ```rust
