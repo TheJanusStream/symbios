@@ -34,5 +34,5 @@ pub mod system;
 pub mod vm;
 
 pub use crate::core::{SymbiosState, interner::SymbolTable};
-pub use crate::export::{export_rule, export_rule_to_string, ExportConfig};
+pub use crate::export::{ExportConfig, export_rule, export_rule_to_string};
 pub use crate::system::System;

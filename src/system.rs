@@ -736,8 +736,12 @@ impl System {
         for rules in self.rules.values() {
             for rule in rules {
                 let config = crate::export::ExportConfig::synthetic(rule);
-                if let Ok(source) = crate::export::export_rule_to_string(rule, &self.interner, &config) {
-                    let pred_name = self.interner.resolve(rule.predecessor)
+                if let Ok(source) =
+                    crate::export::export_rule_to_string(rule, &self.interner, &config)
+                {
+                    let pred_name = self
+                        .interner
+                        .resolve(rule.predecessor)
                         .unwrap_or("?")
                         .to_string();
                     results.push((pred_name, source));
@@ -769,7 +773,8 @@ impl System {
         let mut results = Vec::new();
         for rule in rules {
             let config = crate::export::ExportConfig::synthetic(rule);
-            if let Ok(source) = crate::export::export_rule_to_string(rule, &self.interner, &config) {
+            if let Ok(source) = crate::export::export_rule_to_string(rule, &self.interner, &config)
+            {
                 results.push(source);
             }
         }
@@ -786,14 +791,19 @@ impl System {
     /// # Returns
     /// The rule source string, or an error if not found.
     pub fn export_rule_at(&self, predecessor: &str, index: usize) -> Result<String, SystemError> {
-        let pred_id = self.interner.resolve_id(predecessor)
+        let pred_id = self
+            .interner
+            .resolve_id(predecessor)
             .ok_or_else(|| SystemError::CompileError(format!("Unknown symbol: {}", predecessor)))?;
 
-        let rules = self.rules.get(&pred_id)
+        let rules = self
+            .rules
+            .get(&pred_id)
             .ok_or_else(|| SystemError::CompileError(format!("No rules for: {}", predecessor)))?;
 
-        let rule = rules.get(index)
-            .ok_or_else(|| SystemError::CompileError(format!("Rule index {} out of bounds", index)))?;
+        let rule = rules.get(index).ok_or_else(|| {
+            SystemError::CompileError(format!("Rule index {} out of bounds", index))
+        })?;
 
         let config = crate::export::ExportConfig::synthetic(rule);
         crate::export::export_rule_to_string(rule, &self.interner, &config)
@@ -815,14 +825,19 @@ impl System {
         index: usize,
         param_names: Vec<String>,
     ) -> Result<String, SystemError> {
-        let pred_id = self.interner.resolve_id(predecessor)
+        let pred_id = self
+            .interner
+            .resolve_id(predecessor)
             .ok_or_else(|| SystemError::CompileError(format!("Unknown symbol: {}", predecessor)))?;
 
-        let rules = self.rules.get(&pred_id)
+        let rules = self
+            .rules
+            .get(&pred_id)
             .ok_or_else(|| SystemError::CompileError(format!("No rules for: {}", predecessor)))?;
 
-        let rule = rules.get(index)
-            .ok_or_else(|| SystemError::CompileError(format!("Rule index {} out of bounds", index)))?;
+        let rule = rules.get(index).ok_or_else(|| {
+            SystemError::CompileError(format!("Rule index {} out of bounds", index))
+        })?;
 
         let config = crate::export::ExportConfig {
             predecessor_params: param_names,

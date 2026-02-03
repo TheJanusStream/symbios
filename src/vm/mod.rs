@@ -4,7 +4,7 @@ pub mod decompiler;
 pub mod ops;
 
 pub use compiler::Compiler;
-pub use decompiler::{decompile, decompile_with_params, Decompiler};
+pub use decompiler::{Decompiler, decompile, decompile_with_params};
 pub use ops::{MathOp, Op};
 use std::fmt;
 

@@ -82,7 +82,11 @@ impl Expr {
     }
 
     /// Formats the expression, wrapping in parens if needed for precedence.
-    fn fmt_with_precedence(&self, f: &mut fmt::Formatter<'_>, parent_prec: Precedence) -> fmt::Result {
+    fn fmt_with_precedence(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+        parent_prec: Precedence,
+    ) -> fmt::Result {
         let needs_parens = self.precedence() < parent_prec;
         if needs_parens {
             write!(f, "(")?;

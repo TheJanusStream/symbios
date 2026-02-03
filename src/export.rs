@@ -345,9 +345,6 @@ mod tests {
         let config = ExportConfig::synthetic(&rule);
         assert_eq!(config.predecessor_params, vec!["p0", "p1"]);
         assert_eq!(config.left_context_params, vec!["l0_0"]);
-        assert_eq!(
-            config.right_context_params,
-            vec!["r0_0", "r0_1", "r0_2"]
-        );
+        assert_eq!(config.right_context_params, vec!["r0_0", "r0_1", "r0_2"]);
     }
 }

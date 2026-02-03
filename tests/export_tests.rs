@@ -60,7 +60,9 @@ fn test_export_rule_with_custom_params() {
     let mut sys = System::new();
     sys.add_rule("A(x) : x > 10 -> B(x + 1)").unwrap();
 
-    let exported = sys.export_rule_with_params("A", 0, vec!["x".into()]).unwrap();
+    let exported = sys
+        .export_rule_with_params("A", 0, vec!["x".into()])
+        .unwrap();
     assert_eq!(exported, "A(x) : x > 10 -> B(x + 1)");
 }
 
@@ -117,7 +119,9 @@ fn test_export_complex_expression() {
     let mut sys = System::new();
     sys.add_rule("A(x, y) -> B(x + y * 2, sin(x))").unwrap();
 
-    let exported = sys.export_rule_with_params("A", 0, vec!["x".into(), "y".into()]).unwrap();
+    let exported = sys
+        .export_rule_with_params("A", 0, vec!["x".into(), "y".into()])
+        .unwrap();
     assert_eq!(exported, "A(x, y) -> B(x + y * 2, sin(x))");
 }
 
@@ -134,10 +138,7 @@ fn test_round_trip_parse_export() {
     // Source -> Parse -> Compile -> Export -> Source
     let mut sys = System::new();
 
-    let original_rules = [
-        "A -> A B",
-        "B -> A",
-    ];
+    let original_rules = ["A -> A B", "B -> A"];
 
     for rule in &original_rules {
         sys.add_rule(rule).unwrap();
