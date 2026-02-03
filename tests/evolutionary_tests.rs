@@ -1,5 +1,5 @@
 use symbios::System;
-use symbios::system::{CrossoverConfig, MutationConfig};
+use symbios::system::{CrossoverConfig, MutationConfig, StructuralMutationConfig};
 
 #[test]
 fn test_reset_restores_initial_state() {
@@ -415,4 +415,309 @@ fn test_clone_preserves_initial_state() {
     assert!(cloned.reset());
 
     assert_eq!(sys.state.len(), cloned.state.len());
+}
+
+#[test]
+fn test_structural_mutate_swap_modules() {
+    let mut sys = System::new();
+    sys.add_rule("A -> B C D E").unwrap();
+    sys.set_axiom("A").unwrap();
+
+    let a_sym = sys.interner.resolve_id("A").unwrap();
+    let original_order: Vec<u16> = sys.rules[&a_sym][0]
+        .successors
+        .iter()
+        .map(|m| m.symbol)
+        .collect();
+
+    // High swap rate, no insert/delete
+    let config = StructuralMutationConfig {
+        successor_rate: 1.0,
+        swap_rate: 1.0,
+        insert_rate: 0.0,
+        delete_rate: 0.0,
+        bytecode_rate: 0.0,
+        op_rate: 0.0,
+        push_perturbation: 0.0,
+    };
+
+    // Run multiple times to ensure swap happens
+    for _ in 0..10 {
+        sys.structural_mutate(&config);
+    }
+
+    let new_order: Vec<u16> = sys.rules[&a_sym][0]
+        .successors
+        .iter()
+        .map(|m| m.symbol)
+        .collect();
+
+    // Length should be preserved
+    assert_eq!(original_order.len(), new_order.len());
+}
+
+#[test]
+fn test_structural_mutate_insert_module() {
+    let mut sys = System::new();
+    sys.add_rule("A -> B").unwrap();
+    sys.set_axiom("A").unwrap();
+
+    let a_sym = sys.interner.resolve_id("A").unwrap();
+    let original_len = sys.rules[&a_sym][0].successors.len();
+
+    let config = StructuralMutationConfig {
+        successor_rate: 1.0,
+        swap_rate: 0.0,
+        insert_rate: 1.0,
+        delete_rate: 0.0,
+        bytecode_rate: 0.0,
+        op_rate: 0.0,
+        push_perturbation: 0.0,
+    };
+
+    sys.structural_mutate(&config);
+
+    let new_len = sys.rules[&a_sym][0].successors.len();
+    assert_eq!(new_len, original_len + 1, "Insert should add one module");
+}
+
+#[test]
+fn test_structural_mutate_delete_module() {
+    let mut sys = System::new();
+    sys.add_rule("A -> B C D").unwrap();
+    sys.set_axiom("A").unwrap();
+
+    let a_sym = sys.interner.resolve_id("A").unwrap();
+    let original_len = sys.rules[&a_sym][0].successors.len();
+
+    let config = StructuralMutationConfig {
+        successor_rate: 1.0,
+        swap_rate: 0.0,
+        insert_rate: 0.0,
+        delete_rate: 1.0,
+        bytecode_rate: 0.0,
+        op_rate: 0.0,
+        push_perturbation: 0.0,
+    };
+
+    sys.structural_mutate(&config);
+
+    let new_len = sys.rules[&a_sym][0].successors.len();
+    assert_eq!(new_len, original_len - 1, "Delete should remove one module");
+}
+
+#[test]
+fn test_structural_mutate_preserves_minimum_successor() {
+    let mut sys = System::new();
+    sys.add_rule("A -> B").unwrap();
+    sys.set_axiom("A").unwrap();
+
+    let a_sym = sys.interner.resolve_id("A").unwrap();
+
+    // Try to delete from single-module successor
+    let config = StructuralMutationConfig {
+        successor_rate: 1.0,
+        swap_rate: 0.0,
+        insert_rate: 0.0,
+        delete_rate: 1.0,
+        bytecode_rate: 0.0,
+        op_rate: 0.0,
+        push_perturbation: 0.0,
+    };
+
+    for _ in 0..10 {
+        sys.structural_mutate(&config);
+    }
+
+    // Should still have at least one module
+    assert!(
+        !sys.rules[&a_sym][0].successors.is_empty(),
+        "Delete should preserve at least one module"
+    );
+}
+
+#[test]
+fn test_structural_mutate_bytecode_push_perturbation() {
+    use symbios::vm::Op;
+
+    let mut sys = System::new();
+    sys.add_rule("A(x) -> A(x + 10)").unwrap();
+    sys.set_axiom("A(0)").unwrap();
+
+    let a_sym = sys.interner.resolve_id("A").unwrap();
+
+    // Find the Push(10) in the bytecode
+    let original_push_val = sys.rules[&a_sym][0].successors[0].params[0]
+        .iter()
+        .find_map(|op| if let Op::Push(v) = op { Some(*v) } else { None });
+
+    let config = StructuralMutationConfig {
+        successor_rate: 1.0,
+        swap_rate: 0.0,
+        insert_rate: 0.0,
+        delete_rate: 0.0,
+        bytecode_rate: 1.0,
+        op_rate: 1.0,
+        push_perturbation: 5.0,
+    };
+
+    // Mutate multiple times
+    for _ in 0..10 {
+        sys.structural_mutate(&config);
+    }
+
+    let new_push_val = sys.rules[&a_sym][0].successors[0].params[0]
+        .iter()
+        .find_map(|op| if let Op::Push(v) = op { Some(*v) } else { None });
+
+    // If both found Push ops, they should likely differ after mutation
+    if let (Some(orig), Some(new)) = (original_push_val, new_push_val) {
+        // After 10 mutations with 100% rate, the value should have changed
+        assert!(
+            (orig - new).abs() > 1e-10,
+            "Push constant should be perturbed"
+        );
+    }
+}
+
+#[test]
+fn test_structural_mutate_bytecode_op_swap() {
+    use symbios::vm::Op;
+
+    let mut sys = System::new();
+    sys.add_rule("A(x) -> A(x + x)").unwrap();
+    sys.set_axiom("A(1)").unwrap();
+
+    let a_sym = sys.interner.resolve_id("A").unwrap();
+
+    // Verify there's an Add operation
+    let has_add = sys.rules[&a_sym][0].successors[0].params[0]
+        .iter()
+        .any(|op| matches!(op, Op::Add));
+    assert!(has_add, "Rule should have Add operation");
+
+    let config = StructuralMutationConfig {
+        successor_rate: 1.0,
+        swap_rate: 0.0,
+        insert_rate: 0.0,
+        delete_rate: 0.0,
+        bytecode_rate: 1.0,
+        op_rate: 1.0,
+        push_perturbation: 0.0,
+    };
+
+    // Mutate multiple times - op should eventually change
+    let mut found_different_op = false;
+    for _ in 0..50 {
+        sys.structural_mutate(&config);
+
+        let has_non_add_arithmetic = sys.rules[&a_sym][0].successors[0].params[0]
+            .iter()
+            .any(|op| matches!(op, Op::Sub | Op::Mul | Op::Div));
+
+        if has_non_add_arithmetic {
+            found_different_op = true;
+            break;
+        }
+    }
+
+    assert!(
+        found_different_op,
+        "Op mutation should eventually swap Add to another arithmetic op"
+    );
+}
+
+#[test]
+fn test_structural_mutate_with_rng_reproducibility() {
+    use rand::SeedableRng;
+    use rand_pcg::Pcg64;
+
+    let mut sys1 = System::new();
+    sys1.add_rule("A -> B C D").unwrap();
+    sys1.set_axiom("A").unwrap();
+
+    let mut sys2 = sys1.clone();
+
+    let config = StructuralMutationConfig {
+        successor_rate: 1.0,
+        swap_rate: 0.5,
+        insert_rate: 0.3,
+        delete_rate: 0.2,
+        bytecode_rate: 0.0,
+        op_rate: 0.0,
+        push_perturbation: 0.0,
+    };
+
+    let mut rng1 = Pcg64::seed_from_u64(77777);
+    let mut rng2 = Pcg64::seed_from_u64(77777);
+
+    sys1.structural_mutate_with_rng(&mut rng1, &config);
+    sys2.structural_mutate_with_rng(&mut rng2, &config);
+
+    let a_sym1 = sys1.interner.resolve_id("A").unwrap();
+    let a_sym2 = sys2.interner.resolve_id("A").unwrap();
+
+    let syms1: Vec<u16> = sys1.rules[&a_sym1][0]
+        .successors
+        .iter()
+        .map(|m| m.symbol)
+        .collect();
+    let syms2: Vec<u16> = sys2.rules[&a_sym2][0]
+        .successors
+        .iter()
+        .map(|m| m.symbol)
+        .collect();
+
+    assert_eq!(
+        syms1, syms2,
+        "Same seed should produce identical structural mutations"
+    );
+}
+
+#[test]
+fn test_structural_mutate_respects_zero_rates() {
+    let mut sys = System::new();
+    sys.add_rule("A -> B C").unwrap();
+    sys.set_axiom("A").unwrap();
+
+    let a_sym = sys.interner.resolve_id("A").unwrap();
+    let original: Vec<u16> = sys.rules[&a_sym][0]
+        .successors
+        .iter()
+        .map(|m| m.symbol)
+        .collect();
+
+    // All rates zero
+    let config = StructuralMutationConfig {
+        successor_rate: 0.0,
+        swap_rate: 1.0,
+        insert_rate: 1.0,
+        delete_rate: 1.0,
+        bytecode_rate: 1.0,
+        op_rate: 1.0,
+        push_perturbation: 10.0,
+    };
+
+    for _ in 0..10 {
+        sys.structural_mutate(&config);
+    }
+
+    let after: Vec<u16> = sys.rules[&a_sym][0]
+        .successors
+        .iter()
+        .map(|m| m.symbol)
+        .collect();
+
+    assert_eq!(
+        original, after,
+        "Zero successor_rate should prevent all changes"
+    );
+}
+
+#[test]
+fn test_structural_mutate_empty_interner_safe() {
+    let mut sys = System::new();
+    // No rules, no symbols - should not panic
+    let config = StructuralMutationConfig::default();
+    sys.structural_mutate(&config);
 }

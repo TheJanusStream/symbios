@@ -732,6 +732,39 @@ impl Default for MutationConfig {
     }
 }
 
+/// Configuration for structural mutation operations on rule successors and bytecode.
+#[derive(Debug, Clone)]
+pub struct StructuralMutationConfig {
+    /// Probability of mutating each rule's successor sequence (0.0 - 1.0).
+    pub successor_rate: f64,
+    /// Probability of inserting a new module into successors (0.0 - 1.0).
+    pub insert_rate: f64,
+    /// Probability of deleting a module from successors (0.0 - 1.0).
+    pub delete_rate: f64,
+    /// Probability of swapping two adjacent modules in successors (0.0 - 1.0).
+    pub swap_rate: f64,
+    /// Probability of mutating parameter bytecode for each module (0.0 - 1.0).
+    pub bytecode_rate: f64,
+    /// Probability of mutating each operation in bytecode (0.0 - 1.0).
+    pub op_rate: f64,
+    /// Range for perturbing Push constants (additive).
+    pub push_perturbation: f64,
+}
+
+impl Default for StructuralMutationConfig {
+    fn default() -> Self {
+        Self {
+            successor_rate: 0.1,
+            insert_rate: 0.2,
+            delete_rate: 0.1,
+            swap_rate: 0.2,
+            bytecode_rate: 0.1,
+            op_rate: 0.1,
+            push_perturbation: 0.5,
+        }
+    }
+}
+
 /// Configuration for crossover operations.
 #[derive(Debug, Clone)]
 pub struct CrossoverConfig {
@@ -840,6 +873,141 @@ impl System {
                 *val *= factor;
             }
         }
+    }
+
+    /// Performs structural mutation using an external RNG for reproducibility.
+    ///
+    /// This mutates the structure of rule successors (insert/delete/swap modules)
+    /// and the bytecode of module parameters (change operations).
+    pub fn structural_mutate_with_rng<R: Rng>(
+        &mut self,
+        rng: &mut R,
+        config: &StructuralMutationConfig,
+    ) {
+        let symbol_ids: Vec<u16> = self.interner.iter().map(|(id, _)| id).collect();
+        if symbol_ids.is_empty() {
+            return;
+        }
+
+        for rules in self.rules.values_mut() {
+            for rule in rules.iter_mut() {
+                if rng.random::<f64>() >= config.successor_rate {
+                    continue;
+                }
+
+                // Swap two adjacent modules
+                if rule.successors.len() >= 2 && rng.random::<f64>() < config.swap_rate {
+                    let idx = rng.random_range(0..rule.successors.len() - 1);
+                    rule.successors.swap(idx, idx + 1);
+                }
+
+                // Delete a random module (keep at least one)
+                if rule.successors.len() > 1 && rng.random::<f64>() < config.delete_rate {
+                    let idx = rng.random_range(0..rule.successors.len());
+                    rule.successors.remove(idx);
+                }
+
+                // Insert a new module at a random position
+                if rng.random::<f64>() < config.insert_rate {
+                    let symbol = symbol_ids[rng.random_range(0..symbol_ids.len())];
+                    let new_module = RuntimeModule {
+                        symbol,
+                        params: Vec::new(),
+                    };
+                    let idx = rng.random_range(0..=rule.successors.len());
+                    rule.successors.insert(idx, new_module);
+                }
+
+                // Mutate bytecode of module parameters
+                for module in &mut rule.successors {
+                    if rng.random::<f64>() >= config.bytecode_rate {
+                        continue;
+                    }
+                    for param_bytecode in &mut module.params {
+                        Self::mutate_bytecode(rng, param_bytecode, config);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Mutates a single bytecode sequence by changing operations.
+    fn mutate_bytecode<R: Rng>(
+        rng: &mut R,
+        bytecode: &mut [Op],
+        config: &StructuralMutationConfig,
+    ) {
+        for op in bytecode.iter_mut() {
+            if rng.random::<f64>() >= config.op_rate {
+                continue;
+            }
+            *op = match op {
+                // Perturb Push constants
+                Op::Push(val) => {
+                    let delta =
+                        rng.random_range(-config.push_perturbation..=config.push_perturbation);
+                    Op::Push(*val + delta)
+                }
+                // Swap arithmetic operations
+                Op::Add => Self::random_arithmetic_op(rng),
+                Op::Sub => Self::random_arithmetic_op(rng),
+                Op::Mul => Self::random_arithmetic_op(rng),
+                Op::Div => Self::random_arithmetic_op(rng),
+                // Swap relational operations
+                Op::Eq => Self::random_relational_op(rng),
+                Op::Ne => Self::random_relational_op(rng),
+                Op::Gt => Self::random_relational_op(rng),
+                Op::Lt => Self::random_relational_op(rng),
+                Op::Ge => Self::random_relational_op(rng),
+                Op::Le => Self::random_relational_op(rng),
+                // Swap logical operations (binary only)
+                Op::And => {
+                    if rng.random::<bool>() {
+                        Op::Or
+                    } else {
+                        Op::And
+                    }
+                }
+                Op::Or => {
+                    if rng.random::<bool>() {
+                        Op::And
+                    } else {
+                        Op::Or
+                    }
+                }
+                // Leave other ops unchanged
+                _ => continue,
+            };
+        }
+    }
+
+    fn random_arithmetic_op<R: Rng>(rng: &mut R) -> Op {
+        match rng.random_range(0..4) {
+            0 => Op::Add,
+            1 => Op::Sub,
+            2 => Op::Mul,
+            _ => Op::Div,
+        }
+    }
+
+    fn random_relational_op<R: Rng>(rng: &mut R) -> Op {
+        match rng.random_range(0..6) {
+            0 => Op::Eq,
+            1 => Op::Ne,
+            2 => Op::Gt,
+            3 => Op::Lt,
+            4 => Op::Ge,
+            _ => Op::Le,
+        }
+    }
+
+    /// Performs structural mutation on rule successors and bytecode.
+    ///
+    /// This is a convenience wrapper that uses the system's internal RNG.
+    pub fn structural_mutate(&mut self, config: &StructuralMutationConfig) {
+        let mut rng = std::mem::replace(&mut self.rng, Pcg64::seed_from_u64(0));
+        self.structural_mutate_with_rng(&mut rng, config);
+        self.rng = rng;
     }
 
     /// Performs crossover using an external RNG for reproducibility.
