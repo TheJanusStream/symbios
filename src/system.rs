@@ -776,31 +776,9 @@ impl System {
     /// sys.mutate(&config);
     /// ```
     pub fn mutate(&mut self, config: &MutationConfig) {
-        // Mutate rule probabilities
-        for rules in self.rules.values_mut() {
-            for rule in rules.iter_mut() {
-                if self.rng.random::<f64>() < config.rule_probability_rate {
-                    let delta = self.rng.random_range(
-                        -config.rule_probability_strength..=config.rule_probability_strength,
-                    );
-                    rule.probability = (rule.probability + delta).clamp(0.0, 1.0);
-                }
-            }
-        }
-
-        // Mutate constants
-        let constant_keys: Vec<String> = self.constants.keys().cloned().collect();
-        for key in constant_keys {
-            if self.rng.random::<f64>() < config.constant_rate
-                && let Some(val) = self.constants.get_mut(&key)
-            {
-                let factor = 1.0
-                    + self
-                        .rng
-                        .random_range(-config.constant_strength..=config.constant_strength);
-                *val *= factor;
-            }
-        }
+        let mut rng = std::mem::replace(&mut self.rng, Pcg64::seed_from_u64(0));
+        self.mutate_with_rng(&mut rng, config);
+        self.rng = rng;
     }
 
     /// Performs crossover between this system and another, producing an offspring.
@@ -830,150 +808,10 @@ impl System {
     /// let offspring = parent_a.crossover(&parent_b, &config);
     /// ```
     pub fn crossover(&mut self, other: &System, config: &CrossoverConfig) -> System {
-        let mut offspring = System::new();
-        offspring.rng = Pcg64::seed_from_u64(self.rng.random());
-        offspring.max_capacity = self.max_capacity.max(other.max_capacity);
-        offspring.ignored_symbols = self.ignored_symbols.clone();
-
-        // Merge interners - collect all symbols from both parents
-        let mut symbol_map_self: HashMap<u16, u16> = HashMap::new();
-        let mut symbol_map_other: HashMap<u16, u16> = HashMap::new();
-
-        for (old_id, name) in self.interner.iter() {
-            let new_id = offspring.interner.get_or_intern(name).unwrap_or(old_id);
-            symbol_map_self.insert(old_id, new_id);
-        }
-
-        for (old_id, name) in other.interner.iter() {
-            let new_id = offspring.interner.get_or_intern(name).unwrap_or(old_id);
-            symbol_map_other.insert(old_id, new_id);
-        }
-
-        // Collect all predecessor symbols from both parents
-        let mut all_predecessors: Vec<u16> = Vec::new();
-        for &pred in self.rules.keys() {
-            if let Some(&new_pred) = symbol_map_self.get(&pred)
-                && !all_predecessors.contains(&new_pred)
-            {
-                all_predecessors.push(new_pred);
-            }
-        }
-        for &pred in other.rules.keys() {
-            if let Some(&new_pred) = symbol_map_other.get(&pred)
-                && !all_predecessors.contains(&new_pred)
-            {
-                all_predecessors.push(new_pred);
-            }
-        }
-
-        // For each predecessor, select rules from one parent or the other
-        for new_pred in all_predecessors {
-            // Find original predecessor IDs
-            let self_pred = symbol_map_self
-                .iter()
-                .find(|(_, v)| **v == new_pred)
-                .map(|(k, _)| *k);
-            let other_pred = symbol_map_other
-                .iter()
-                .find(|(_, v)| **v == new_pred)
-                .map(|(k, _)| *k);
-
-            let self_rules = self_pred.and_then(|p| self.rules.get(&p));
-            let other_rules = other_pred.and_then(|p| other.rules.get(&p));
-
-            let (selected_rules, symbol_map) = match (self_rules, other_rules) {
-                (Some(rules), None) => (rules, &symbol_map_self),
-                (None, Some(rules)) => (rules, &symbol_map_other),
-                (Some(self_r), Some(other_r)) => {
-                    if self.rng.random::<f64>() < config.rule_bias {
-                        (self_r, &symbol_map_self)
-                    } else {
-                        (other_r, &symbol_map_other)
-                    }
-                }
-                (None, None) => continue,
-            };
-
-            // Remap and insert rules
-            let mut remapped_rules: Vec<RuntimeRule> = Vec::new();
-            for rule in selected_rules {
-                let remapped = RuntimeRule {
-                    predecessor: *symbol_map
-                        .get(&rule.predecessor)
-                        .unwrap_or(&rule.predecessor),
-                    left_context: rule
-                        .left_context
-                        .iter()
-                        .map(|s| *symbol_map.get(s).unwrap_or(s))
-                        .collect(),
-                    right_context: rule
-                        .right_context
-                        .iter()
-                        .map(|s| *symbol_map.get(s).unwrap_or(s))
-                        .collect(),
-                    probability: rule.probability,
-                    condition: rule.condition.clone(),
-                    successors: rule
-                        .successors
-                        .iter()
-                        .map(|s| RuntimeModule {
-                            symbol: *symbol_map.get(&s.symbol).unwrap_or(&s.symbol),
-                            params: s.params.clone(),
-                        })
-                        .collect(),
-                    expected_arities: rule.expected_arities.clone(),
-                };
-                remapped_rules.push(remapped);
-            }
-
-            offspring.rules.insert(new_pred, remapped_rules);
-        }
-
-        // Blend constants
-        let mut all_constant_keys: Vec<String> = self.constants.keys().cloned().collect();
-        for key in other.constants.keys() {
-            if !all_constant_keys.contains(key) {
-                all_constant_keys.push(key.clone());
-            }
-        }
-
-        for key in all_constant_keys {
-            let val_a = self.constants.get(&key).copied();
-            let val_b = other.constants.get(&key).copied();
-
-            let blended = match (val_a, val_b) {
-                (Some(a), Some(b)) => a * (1.0 - config.constant_blend) + b * config.constant_blend,
-                (Some(a), None) => a,
-                (None, Some(b)) => b,
-                (None, None) => continue,
-            };
-            offspring.constants.insert(key, blended);
-        }
-
-        // Merge ignored symbols from both parents
-        let mut new_ignored = Vec::new();
-
-        // Remap and add Parent A's ignored symbols
-        for s in &self.ignored_symbols {
-            if let Some(new_id) = symbol_map_self.get(s)
-                && !new_ignored.contains(new_id)
-            {
-                new_ignored.push(*new_id);
-            }
-        }
-
-        // Remap and add Parent B's ignored symbols
-        for s in &other.ignored_symbols {
-            if let Some(new_id) = symbol_map_other.get(s)
-                && !new_ignored.contains(new_id)
-            {
-                new_ignored.push(*new_id);
-            }
-        }
-
-        offspring.ignored_symbols = new_ignored;
-
-        offspring
+        let mut rng = std::mem::replace(&mut self.rng, Pcg64::seed_from_u64(0));
+        let result = self.crossover_with_rng(other, &mut rng, config);
+        self.rng = rng;
+        result
     }
 
     /// Mutates the system using an external RNG for reproducibility.
@@ -1124,11 +962,25 @@ impl System {
             offspring.constants.insert(key, blended);
         }
 
-        offspring.ignored_symbols = self
-            .ignored_symbols
-            .iter()
-            .filter_map(|s| symbol_map_self.get(s).copied())
-            .collect();
+        let mut new_ignored = Vec::new();
+
+        for s in &self.ignored_symbols {
+            if let Some(new_id) = symbol_map_self.get(s)
+                && !new_ignored.contains(new_id)
+            {
+                new_ignored.push(*new_id);
+            }
+        }
+
+        for s in &other.ignored_symbols {
+            if let Some(new_id) = symbol_map_other.get(s)
+                && !new_ignored.contains(new_id)
+            {
+                new_ignored.push(*new_id);
+            }
+        }
+
+        offspring.ignored_symbols = new_ignored;
 
         offspring
     }
