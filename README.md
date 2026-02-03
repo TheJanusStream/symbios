@@ -113,6 +113,57 @@ sys.structural_mutate_with_rng(&mut rng, &structural_config);
 let offspring = parent_a.crossover_with_rng(&parent_b, &mut rng, &crossover_config);
 ```
 
+## Rule Export
+
+Symbios can decompile compiled rules back to source text. This is useful for inspecting mutated rules, serialization, and debugging.
+
+### Export All Rules
+
+```rust
+use symbios::System;
+
+let mut sys = System::new();
+sys.add_rule("A(x) : x > 10 -> B(x + 1)").unwrap();
+sys.add_rule("A(x) : x <= 10 -> A(x + 1)").unwrap();
+
+// Export all rules as (predecessor, source) pairs
+for (pred, source) in sys.export_rules() {
+    println!("{}: {}", pred, source);
+}
+// Output:
+// A: A(p0) : p0 > 10 -> B(p0 + 1)
+// A: A(p0) : p0 <= 10 -> A(p0 + 1)
+```
+
+### Export Rules for a Specific Symbol
+
+```rust
+// Get all rules for symbol "A"
+let rules = sys.export_rules_for("A");
+for rule in rules {
+    println!("{}", rule);
+}
+```
+
+### Export a Specific Rule
+
+```rust
+// Get rule at index 0 for symbol "A"
+let rule = sys.export_rule_at("A", 0).unwrap();
+println!("{}", rule);
+```
+
+### Custom Parameter Names
+
+By default, exported rules use synthetic parameter names (`p0`, `p1`, ...). You can provide custom names:
+
+```rust
+// Export with meaningful parameter names
+let rule = sys.export_rule_with_params("A", 0, vec!["age".into()]).unwrap();
+println!("{}", rule);
+// Output: A(age) : age > 10 -> B(age + 1)
+```
+
 ## Performance
 
 Symbios uses a flat memory arena for parameters and `u16` symbol interning.
