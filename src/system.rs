@@ -791,14 +791,14 @@ impl System {
         // Mutate constants
         let constant_keys: Vec<String> = self.constants.keys().cloned().collect();
         for key in constant_keys {
-            if self.rng.random::<f64>() < config.constant_rate {
-                if let Some(val) = self.constants.get_mut(&key) {
-                    let factor = 1.0
-                        + self
-                            .rng
-                            .random_range(-config.constant_strength..=config.constant_strength);
-                    *val *= factor;
-                }
+            if self.rng.random::<f64>() < config.constant_rate
+                && let Some(val) = self.constants.get_mut(&key)
+            {
+                let factor = 1.0
+                    + self
+                        .rng
+                        .random_range(-config.constant_strength..=config.constant_strength);
+                *val *= factor;
             }
         }
     }
@@ -852,17 +852,17 @@ impl System {
         // Collect all predecessor symbols from both parents
         let mut all_predecessors: Vec<u16> = Vec::new();
         for &pred in self.rules.keys() {
-            if let Some(&new_pred) = symbol_map_self.get(&pred) {
-                if !all_predecessors.contains(&new_pred) {
-                    all_predecessors.push(new_pred);
-                }
+            if let Some(&new_pred) = symbol_map_self.get(&pred)
+                && !all_predecessors.contains(&new_pred)
+            {
+                all_predecessors.push(new_pred);
             }
         }
         for &pred in other.rules.keys() {
-            if let Some(&new_pred) = symbol_map_other.get(&pred) {
-                if !all_predecessors.contains(&new_pred) {
-                    all_predecessors.push(new_pred);
-                }
+            if let Some(&new_pred) = symbol_map_other.get(&pred)
+                && !all_predecessors.contains(&new_pred)
+            {
+                all_predecessors.push(new_pred);
             }
         }
 
@@ -955,19 +955,19 @@ impl System {
 
         // Remap and add Parent A's ignored symbols
         for s in &self.ignored_symbols {
-            if let Some(new_id) = symbol_map_self.get(s) {
-                if !new_ignored.contains(new_id) {
-                    new_ignored.push(*new_id);
-                }
+            if let Some(new_id) = symbol_map_self.get(s)
+                && !new_ignored.contains(new_id)
+            {
+                new_ignored.push(*new_id);
             }
         }
 
         // Remap and add Parent B's ignored symbols
         for s in &other.ignored_symbols {
-            if let Some(new_id) = symbol_map_other.get(s) {
-                if !new_ignored.contains(new_id) {
-                    new_ignored.push(*new_id);
-                }
+            if let Some(new_id) = symbol_map_other.get(s)
+                && !new_ignored.contains(new_id)
+            {
+                new_ignored.push(*new_id);
             }
         }
 
@@ -994,12 +994,12 @@ impl System {
 
         let constant_keys: Vec<String> = self.constants.keys().cloned().collect();
         for key in constant_keys {
-            if rng.random::<f64>() < config.constant_rate {
-                if let Some(val) = self.constants.get_mut(&key) {
-                    let factor = 1.0
-                        + rng.random_range(-config.constant_strength..=config.constant_strength);
-                    *val *= factor;
-                }
+            if rng.random::<f64>() < config.constant_rate
+                && let Some(val) = self.constants.get_mut(&key)
+            {
+                let factor =
+                    1.0 + rng.random_range(-config.constant_strength..=config.constant_strength);
+                *val *= factor;
             }
         }
     }
@@ -1030,17 +1030,17 @@ impl System {
 
         let mut all_predecessors: Vec<u16> = Vec::new();
         for &pred in self.rules.keys() {
-            if let Some(&new_pred) = symbol_map_self.get(&pred) {
-                if !all_predecessors.contains(&new_pred) {
-                    all_predecessors.push(new_pred);
-                }
+            if let Some(&new_pred) = symbol_map_self.get(&pred)
+                && !all_predecessors.contains(&new_pred)
+            {
+                all_predecessors.push(new_pred);
             }
         }
         for &pred in other.rules.keys() {
-            if let Some(&new_pred) = symbol_map_other.get(&pred) {
-                if !all_predecessors.contains(&new_pred) {
-                    all_predecessors.push(new_pred);
-                }
+            if let Some(&new_pred) = symbol_map_other.get(&pred)
+                && !all_predecessors.contains(&new_pred)
+            {
+                all_predecessors.push(new_pred);
             }
         }
 
