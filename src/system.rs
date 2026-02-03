@@ -950,12 +950,28 @@ impl System {
             offspring.constants.insert(key, blended);
         }
 
-        // Remap ignored symbols
-        offspring.ignored_symbols = self
-            .ignored_symbols
-            .iter()
-            .filter_map(|s| symbol_map_self.get(s).copied())
-            .collect();
+        // Merge ignored symbols from both parents
+        let mut new_ignored = Vec::new();
+
+        // Remap and add Parent A's ignored symbols
+        for s in &self.ignored_symbols {
+            if let Some(new_id) = symbol_map_self.get(s) {
+                if !new_ignored.contains(new_id) {
+                    new_ignored.push(*new_id);
+                }
+            }
+        }
+
+        // Remap and add Parent B's ignored symbols
+        for s in &other.ignored_symbols {
+            if let Some(new_id) = symbol_map_other.get(s) {
+                if !new_ignored.contains(new_id) {
+                    new_ignored.push(*new_id);
+                }
+            }
+        }
+
+        offspring.ignored_symbols = new_ignored;
 
         offspring
     }
