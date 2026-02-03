@@ -1,8 +1,10 @@
 /* src/vm/mod.rs */
 pub mod compiler;
+pub mod decompiler;
 pub mod ops;
 
 pub use compiler::Compiler;
+pub use decompiler::{decompile, decompile_with_params, Decompiler};
 pub use ops::{MathOp, Op};
 use std::fmt;
 
