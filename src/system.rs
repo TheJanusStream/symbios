@@ -7,6 +7,10 @@ use rand_pcg::Pcg64;
 use std::collections::HashMap;
 use thiserror::Error;
 
+/// Maximum number of successors allowed per rule (DoS protection).
+/// Matches the parser's limit for consistency.
+const MAX_SUCCESSORS: usize = 128;
+
 #[derive(Error, Debug)]
 pub enum SystemError {
     #[error("Parser error: {0}")]
@@ -1004,7 +1008,8 @@ impl System {
     /// * `config` - Controls crossover behavior
     ///
     /// # Returns
-    /// A new `System` combining genetic material from both parents.
+    /// A new `System` combining genetic material from both parents, or an error
+    /// if the offspring's interner cannot accommodate all symbols.
     ///
     /// # Example
     /// ```
@@ -1017,9 +1022,13 @@ impl System {
     /// parent_b.add_rule("A -> B").unwrap();
     ///
     /// let config = CrossoverConfig::default();
-    /// let offspring = parent_a.crossover(&parent_b, &config);
+    /// let offspring = parent_a.crossover(&parent_b, &config).unwrap();
     /// ```
-    pub fn crossover(&mut self, other: &System, config: &CrossoverConfig) -> System {
+    pub fn crossover(
+        &mut self,
+        other: &System,
+        config: &CrossoverConfig,
+    ) -> Result<System, SystemError> {
         let mut rng = std::mem::replace(&mut self.rng, Pcg64::seed_from_u64(0));
         let result = self.crossover_with_rng(other, &mut rng, config);
         self.rng = rng;
@@ -1086,8 +1095,10 @@ impl System {
                     rule.successors.remove(idx);
                 }
 
-                // Insert a new module at a random position
-                if rng.random::<f64>() < config.insert_rate {
+                // Insert a new module at a random position (respecting MAX_SUCCESSORS limit)
+                if rule.successors.len() < MAX_SUCCESSORS
+                    && rng.random::<f64>() < config.insert_rate
+                {
                     let symbol = symbol_ids[rng.random_range(0..symbol_ids.len())];
                     // Initialize with correct arity: one Op::Push(0.0) per expected parameter
                     let arity = self.symbol_arities.get(&symbol).copied().unwrap_or(0);
@@ -1190,12 +1201,16 @@ impl System {
     }
 
     /// Performs crossover using an external RNG for reproducibility.
+    ///
+    /// # Errors
+    /// Returns an error if the offspring's interner cannot accommodate all symbols
+    /// from both parents (e.g., due to ID overflow or heap limits).
     pub fn crossover_with_rng<R: Rng>(
         &self,
         other: &System,
         rng: &mut R,
         config: &CrossoverConfig,
-    ) -> System {
+    ) -> Result<System, SystemError> {
         let mut offspring = System::new();
         offspring.rng = Pcg64::seed_from_u64(rng.random());
         offspring.max_capacity = self.max_capacity.max(other.max_capacity);
@@ -1204,12 +1219,18 @@ impl System {
         let mut symbol_map_other: HashMap<u16, u16> = HashMap::new();
 
         for (old_id, name) in self.interner.iter() {
-            let new_id = offspring.interner.get_or_intern(name).unwrap_or(old_id);
+            let new_id = offspring
+                .interner
+                .get_or_intern(name)
+                .map_err(SystemError::InternerError)?;
             symbol_map_self.insert(old_id, new_id);
         }
 
         for (old_id, name) in other.interner.iter() {
-            let new_id = offspring.interner.get_or_intern(name).unwrap_or(old_id);
+            let new_id = offspring
+                .interner
+                .get_or_intern(name)
+                .map_err(SystemError::InternerError)?;
             symbol_map_other.insert(old_id, new_id);
         }
 
@@ -1329,6 +1350,6 @@ impl System {
 
         offspring.ignored_symbols = new_ignored;
 
-        offspring
+        Ok(offspring)
     }
 }

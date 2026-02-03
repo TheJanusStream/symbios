@@ -95,7 +95,7 @@ let config = CrossoverConfig {
     constant_blend: 0.5,  // Blending factor (0.0 = A, 1.0 = B, 0.5 = average)
 };
 
-let offspring = parent_a.crossover(&parent_b, &config);
+let offspring = parent_a.crossover(&parent_b, &config)?;
 // offspring.constants["ANGLE"] == 45.0 (blended)
 ```
 

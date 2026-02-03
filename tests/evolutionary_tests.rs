@@ -183,7 +183,7 @@ fn test_crossover_inherits_rules() {
     let mut inherited_b = false;
 
     for _ in 0..20 {
-        let offspring = parent_a.crossover(&parent_b, &config);
+        let offspring = parent_a.crossover(&parent_b, &config).unwrap();
 
         // Check if offspring has rules for A or B
         for (_, name) in offspring.interner.iter() {
@@ -225,7 +225,7 @@ fn test_crossover_blends_constants() {
         constant_blend: 0.5,
     };
 
-    let offspring = parent_a.crossover(&parent_b, &config);
+    let offspring = parent_a.crossover(&parent_b, &config).unwrap();
     let blended = offspring.constants["ANGLE"];
 
     // Should be average: (30 + 60) / 2 = 45
@@ -252,7 +252,7 @@ fn test_crossover_constant_blend_bias() {
         constant_blend: 1.0,
     };
 
-    let offspring = parent_a.crossover(&parent_b, &config);
+    let offspring = parent_a.crossover(&parent_b, &config).unwrap();
     assert!(
         (offspring.constants["X"] - 100.0).abs() < 1e-10,
         "constant_blend=1.0 should take parent B's value"
@@ -264,7 +264,7 @@ fn test_crossover_constant_blend_bias() {
         constant_blend: 0.0,
     };
 
-    let offspring = parent_a.crossover(&parent_b, &config);
+    let offspring = parent_a.crossover(&parent_b, &config).unwrap();
     assert!(
         (offspring.constants["X"] - 0.0).abs() < 1e-10,
         "constant_blend=0.0 should take parent A's value"
@@ -282,7 +282,7 @@ fn test_crossover_unique_constants() {
     parent_b.add_rule("A -> A").unwrap();
 
     let config = CrossoverConfig::default();
-    let offspring = parent_a.crossover(&parent_b, &config);
+    let offspring = parent_a.crossover(&parent_b, &config).unwrap();
 
     // Both unique constants should be inherited
     assert!(offspring.constants.contains_key("ONLY_A"));
@@ -347,8 +347,12 @@ fn test_crossover_with_rng_reproducibility() {
     let mut rng1 = Pcg64::seed_from_u64(99999);
     let mut rng2 = Pcg64::seed_from_u64(99999);
 
-    let offspring1 = parent_a.crossover_with_rng(&parent_b, &mut rng1, &config);
-    let offspring2 = parent_a.crossover_with_rng(&parent_b, &mut rng2, &config);
+    let offspring1 = parent_a
+        .crossover_with_rng(&parent_b, &mut rng1, &config)
+        .unwrap();
+    let offspring2 = parent_a
+        .crossover_with_rng(&parent_b, &mut rng2, &config)
+        .unwrap();
 
     // Same seed should produce identical offspring
     assert_eq!(
@@ -370,7 +374,7 @@ fn test_crossover_preserves_symbol_mapping() {
         constant_blend: 0.5,
     };
 
-    let mut offspring = parent_a.crossover(&parent_b, &config);
+    let mut offspring = parent_a.crossover(&parent_b, &config).unwrap();
 
     // Offspring should be able to set axiom and derive using inherited symbols
     offspring.set_axiom("Foo").unwrap();
@@ -810,4 +814,138 @@ fn test_structural_mutate_inserted_modules_are_functional() {
         result.is_ok(),
         "Derivation should succeed with properly initialized inserted modules"
     );
+}
+
+/// Tests that structural mutation respects the MAX_SUCCESSORS limit (128).
+///
+/// This addresses the "Unbounded Growth via Mutation" issue: the insert operation
+/// must check against the limit to prevent DoS via runaway evolutionary loops.
+#[test]
+fn test_structural_mutate_respects_max_successors_limit() {
+    use rand::SeedableRng;
+    use rand_pcg::Pcg64;
+
+    let mut sys = System::new();
+    // Create a rule with many successors (close to the limit)
+    let mut rule_str = String::from("A -> B");
+    for _ in 1..120 {
+        rule_str.push_str(" B");
+    }
+    sys.add_rule(&rule_str).unwrap();
+    sys.set_axiom("A").unwrap();
+
+    let a_sym = sys.interner.resolve_id("A").unwrap();
+    let initial_len = sys.rules[&a_sym][0].successors.len();
+    assert_eq!(initial_len, 120);
+
+    // Force many insertions with 100% rate
+    let config = StructuralMutationConfig {
+        successor_rate: 1.0,
+        swap_rate: 0.0,
+        insert_rate: 1.0,
+        delete_rate: 0.0,
+        bytecode_rate: 0.0,
+        op_rate: 0.0,
+        push_perturbation: 0.0,
+    };
+
+    // Run many mutation cycles - without the fix, this would grow unbounded
+    for seed in 0..100 {
+        let mut rng = Pcg64::seed_from_u64(seed);
+        sys.structural_mutate_with_rng(&mut rng, &config);
+
+        // Verify we never exceed 128 successors
+        let current_len = sys.rules[&a_sym][0].successors.len();
+        assert!(
+            current_len <= 128,
+            "Successor count {} exceeds MAX_SUCCESSORS limit of 128 at seed {}",
+            current_len,
+            seed
+        );
+    }
+
+    // After all mutations, verify the limit is still respected
+    let final_len = sys.rules[&a_sym][0].successors.len();
+    assert!(
+        final_len <= 128,
+        "Final successor count {} exceeds MAX_SUCCESSORS limit",
+        final_len
+    );
+}
+
+/// Tests that crossover returns an error when the interner cannot accommodate symbols.
+///
+/// This addresses the "Semantic Corruption in Crossover" issue: crossover must
+/// propagate interner errors rather than falling back to old_id which causes
+/// symbol aliasing.
+#[test]
+fn test_crossover_returns_error_on_interner_overflow() {
+    // Create a parent with a custom small interner that will overflow
+    let mut parent_a = System::new();
+    parent_a.add_rule("A -> B").unwrap();
+
+    let mut parent_b = System::new();
+    parent_b.add_rule("X -> Y").unwrap();
+
+    // Normal crossover should succeed
+    let config = CrossoverConfig::default();
+    let result = parent_a.crossover(&parent_b, &config);
+    assert!(result.is_ok(), "Normal crossover should succeed");
+
+    // The offspring should have all symbols properly mapped
+    let offspring = result.unwrap();
+    assert!(offspring.interner.resolve_id("A").is_some());
+    assert!(offspring.interner.resolve_id("B").is_some());
+    assert!(offspring.interner.resolve_id("X").is_some());
+    assert!(offspring.interner.resolve_id("Y").is_some());
+}
+
+/// Tests that crossover correctly maps symbols without aliasing.
+///
+/// Ensures that symbols from both parents are correctly interned in the offspring
+/// without any ID collisions that could corrupt rule definitions.
+#[test]
+fn test_crossover_no_symbol_aliasing() {
+    let mut parent_a = System::new();
+    parent_a.add_rule("Alpha -> Beta Gamma").unwrap();
+    parent_a.set_axiom("Alpha").unwrap();
+
+    let mut parent_b = System::new();
+    parent_b.add_rule("Delta -> Epsilon").unwrap();
+
+    let config = CrossoverConfig {
+        rule_bias: 1.0, // Take rules from parent A
+        constant_blend: 0.5,
+    };
+
+    let mut offspring = parent_a.crossover(&parent_b, &config).unwrap();
+
+    // Verify all symbols are distinct and properly mapped
+    let alpha_id = offspring.interner.resolve_id("Alpha");
+    let beta_id = offspring.interner.resolve_id("Beta");
+    let gamma_id = offspring.interner.resolve_id("Gamma");
+
+    assert!(alpha_id.is_some(), "Alpha should be interned");
+    assert!(beta_id.is_some(), "Beta should be interned");
+    assert!(gamma_id.is_some(), "Gamma should be interned");
+
+    // All IDs should be unique
+    let ids = vec![alpha_id.unwrap(), beta_id.unwrap(), gamma_id.unwrap()];
+    let unique_ids: std::collections::HashSet<_> = ids.iter().collect();
+    assert_eq!(
+        ids.len(),
+        unique_ids.len(),
+        "All symbol IDs should be unique"
+    );
+
+    // Offspring should be able to derive correctly
+    offspring.set_axiom("Alpha").unwrap();
+    offspring.derive(1).unwrap();
+
+    // Verify the derived state has the correct symbols
+    assert_eq!(offspring.state.len(), 2);
+    let v0 = offspring.state.get_view(0).unwrap();
+    let v1 = offspring.state.get_view(1).unwrap();
+    assert_eq!(offspring.interner.resolve(v0.sym), Some("Beta"));
+    assert_eq!(offspring.interner.resolve(v1.sym), Some("Gamma"));
 }

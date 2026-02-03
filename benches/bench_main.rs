@@ -129,7 +129,7 @@ fn bench_crossover(c: &mut Criterion) {
             },
             |(mut parent_a, parent_b)| {
                 let config = CrossoverConfig::default();
-                black_box(parent_a.crossover(&parent_b, &config))
+                black_box(parent_a.crossover(&parent_b, &config).unwrap())
             },
             criterion::BatchSize::SmallInput,
         )
@@ -156,7 +156,7 @@ fn bench_crossover(c: &mut Criterion) {
             },
             |(mut parent_a, parent_b)| {
                 let config = CrossoverConfig::default();
-                black_box(parent_a.crossover(&parent_b, &config))
+                black_box(parent_a.crossover(&parent_b, &config).unwrap())
             },
             criterion::BatchSize::SmallInput,
         )
@@ -243,7 +243,7 @@ fn bench_combined_evolution(c: &mut Criterion) {
             |(mut parent_a, parent_b)| {
                 // Crossover
                 let crossover_config = CrossoverConfig::default();
-                let mut offspring = parent_a.crossover(&parent_b, &crossover_config);
+                let mut offspring = parent_a.crossover(&parent_b, &crossover_config).unwrap();
 
                 // Mutation
                 let mutation_config = MutationConfig::default();
