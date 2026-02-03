@@ -81,6 +81,14 @@ impl SymbolTable {
     pub fn is_empty(&self) -> bool {
         self.to_str.is_empty()
     }
+
+    /// Returns an iterator over (id, name) pairs.
+    pub fn iter(&self) -> impl Iterator<Item = (u16, &str)> {
+        self.to_str
+            .iter()
+            .enumerate()
+            .map(|(id, name)| (id as u16, &**name))
+    }
 }
 
 impl Serialize for SymbolTable {

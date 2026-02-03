@@ -85,6 +85,8 @@ pub struct System {
     gen_right_indices: Vec<usize>,
     /// Reusable buffer for successor parameters.
     gen_new_params: Vec<f64>,
+    /// Stored initial axiom state for reset functionality.
+    initial_state: Option<SymbiosState>,
 }
 
 impl Default for System {
@@ -110,6 +112,7 @@ impl System {
             gen_left_indices: Vec::new(),
             gen_right_indices: Vec::new(),
             gen_new_params: Vec::new(),
+            initial_state: None,
         }
     }
 
@@ -415,7 +418,40 @@ impl System {
             self.state.push(sym_id, 0.0, &values)?;
         }
 
+        // Store initial state for reset functionality
+        self.initial_state = Some(self.state.clone());
+
         Ok(())
+    }
+
+    /// Resets the system state to the initial axiom.
+    ///
+    /// This restores the state to what it was immediately after `set_axiom` was called,
+    /// discarding all derivation steps. Returns `false` if no axiom has been set.
+    ///
+    /// # Example
+    /// ```
+    /// use symbios::System;
+    ///
+    /// let mut sys = System::new();
+    /// sys.add_rule("A -> A B").unwrap();
+    /// sys.set_axiom("A").unwrap();
+    /// sys.derive(5).unwrap();
+    ///
+    /// // State has grown after derivation
+    /// assert!(sys.state.len() > 1);
+    ///
+    /// // Reset to initial axiom
+    /// assert!(sys.reset());
+    /// assert_eq!(sys.state.len(), 1);
+    /// ```
+    pub fn reset(&mut self) -> bool {
+        if let Some(ref initial) = self.initial_state {
+            self.state = initial.clone();
+            true
+        } else {
+            false
+        }
     }
 }
 
@@ -648,5 +684,436 @@ pub mod matching {
             return false;
         }
         false
+    }
+}
+
+impl Clone for System {
+    fn clone(&self) -> Self {
+        Self {
+            interner: self.interner.clone(),
+            rules: self.rules.clone(),
+            state: self.state.clone(),
+            back_buffer: SymbiosState::new(),
+            ignored_symbols: self.ignored_symbols.clone(),
+            rng: Pcg64::seed_from_u64(self.rng.clone().random()),
+            constants: self.constants.clone(),
+            max_capacity: self.max_capacity,
+            scratch: matching::MatchScratch::new(),
+            gen_context_frame: Vec::new(),
+            gen_left_indices: Vec::new(),
+            gen_right_indices: Vec::new(),
+            gen_new_params: Vec::new(),
+            initial_state: self.initial_state.clone(),
+        }
+    }
+}
+
+/// Configuration for mutation operations.
+#[derive(Debug, Clone)]
+pub struct MutationConfig {
+    /// Probability of mutating each rule's probability (0.0 - 1.0).
+    pub rule_probability_rate: f64,
+    /// Maximum change to rule probabilities (additive, clamped to 0.0-1.0).
+    pub rule_probability_strength: f64,
+    /// Probability of mutating each constant (0.0 - 1.0).
+    pub constant_rate: f64,
+    /// Relative change to constants (multiplicative factor range).
+    pub constant_strength: f64,
+}
+
+impl Default for MutationConfig {
+    fn default() -> Self {
+        Self {
+            rule_probability_rate: 0.1,
+            rule_probability_strength: 0.2,
+            constant_rate: 0.1,
+            constant_strength: 0.2,
+        }
+    }
+}
+
+/// Configuration for crossover operations.
+#[derive(Debug, Clone)]
+pub struct CrossoverConfig {
+    /// Probability of taking each rule from parent A vs parent B (0.5 = uniform).
+    pub rule_bias: f64,
+    /// Blending factor for constants (0.0 = parent A, 1.0 = parent B, 0.5 = average).
+    pub constant_blend: f64,
+}
+
+impl Default for CrossoverConfig {
+    fn default() -> Self {
+        Self {
+            rule_bias: 0.5,
+            constant_blend: 0.5,
+        }
+    }
+}
+
+impl System {
+    /// Mutates the system in-place for evolutionary algorithms.
+    ///
+    /// This method randomly perturbs rule probabilities and constants based on
+    /// the provided configuration. Useful for genetic algorithms and evolutionary
+    /// optimization of L-System parameters.
+    ///
+    /// # Arguments
+    /// * `config` - Controls mutation rates and strengths
+    ///
+    /// # Example
+    /// ```
+    /// use symbios::{System, system::MutationConfig};
+    ///
+    /// let mut sys = System::new();
+    /// sys.add_rule("A -> A B").unwrap();
+    /// sys.add_rule("A -> B").unwrap();
+    ///
+    /// let config = MutationConfig {
+    ///     rule_probability_rate: 0.5,
+    ///     rule_probability_strength: 0.1,
+    ///     ..Default::default()
+    /// };
+    /// sys.mutate(&config);
+    /// ```
+    pub fn mutate(&mut self, config: &MutationConfig) {
+        // Mutate rule probabilities
+        for rules in self.rules.values_mut() {
+            for rule in rules.iter_mut() {
+                if self.rng.random::<f64>() < config.rule_probability_rate {
+                    let delta = self.rng.random_range(
+                        -config.rule_probability_strength..=config.rule_probability_strength,
+                    );
+                    rule.probability = (rule.probability + delta).clamp(0.0, 1.0);
+                }
+            }
+        }
+
+        // Mutate constants
+        let constant_keys: Vec<String> = self.constants.keys().cloned().collect();
+        for key in constant_keys {
+            if self.rng.random::<f64>() < config.constant_rate {
+                if let Some(val) = self.constants.get_mut(&key) {
+                    let factor = 1.0
+                        + self
+                            .rng
+                            .random_range(-config.constant_strength..=config.constant_strength);
+                    *val *= factor;
+                }
+            }
+        }
+    }
+
+    /// Performs crossover between this system and another, producing an offspring.
+    ///
+    /// Rules are selected from either parent based on the bias parameter.
+    /// Constants are blended between parents. The offspring inherits the interner
+    /// state needed to support all inherited rules.
+    ///
+    /// # Arguments
+    /// * `other` - The other parent system
+    /// * `config` - Controls crossover behavior
+    ///
+    /// # Returns
+    /// A new `System` combining genetic material from both parents.
+    ///
+    /// # Example
+    /// ```
+    /// use symbios::{System, system::CrossoverConfig};
+    ///
+    /// let mut parent_a = System::new();
+    /// parent_a.add_rule("A -> A A").unwrap();
+    ///
+    /// let mut parent_b = System::new();
+    /// parent_b.add_rule("A -> B").unwrap();
+    ///
+    /// let config = CrossoverConfig::default();
+    /// let offspring = parent_a.crossover(&parent_b, &config);
+    /// ```
+    pub fn crossover(&mut self, other: &System, config: &CrossoverConfig) -> System {
+        let mut offspring = System::new();
+        offspring.rng = Pcg64::seed_from_u64(self.rng.random());
+        offspring.max_capacity = self.max_capacity.max(other.max_capacity);
+        offspring.ignored_symbols = self.ignored_symbols.clone();
+
+        // Merge interners - collect all symbols from both parents
+        let mut symbol_map_self: HashMap<u16, u16> = HashMap::new();
+        let mut symbol_map_other: HashMap<u16, u16> = HashMap::new();
+
+        for (old_id, name) in self.interner.iter() {
+            let new_id = offspring.interner.get_or_intern(name).unwrap_or(old_id);
+            symbol_map_self.insert(old_id, new_id);
+        }
+
+        for (old_id, name) in other.interner.iter() {
+            let new_id = offspring.interner.get_or_intern(name).unwrap_or(old_id);
+            symbol_map_other.insert(old_id, new_id);
+        }
+
+        // Collect all predecessor symbols from both parents
+        let mut all_predecessors: Vec<u16> = Vec::new();
+        for &pred in self.rules.keys() {
+            if let Some(&new_pred) = symbol_map_self.get(&pred) {
+                if !all_predecessors.contains(&new_pred) {
+                    all_predecessors.push(new_pred);
+                }
+            }
+        }
+        for &pred in other.rules.keys() {
+            if let Some(&new_pred) = symbol_map_other.get(&pred) {
+                if !all_predecessors.contains(&new_pred) {
+                    all_predecessors.push(new_pred);
+                }
+            }
+        }
+
+        // For each predecessor, select rules from one parent or the other
+        for new_pred in all_predecessors {
+            // Find original predecessor IDs
+            let self_pred = symbol_map_self
+                .iter()
+                .find(|(_, v)| **v == new_pred)
+                .map(|(k, _)| *k);
+            let other_pred = symbol_map_other
+                .iter()
+                .find(|(_, v)| **v == new_pred)
+                .map(|(k, _)| *k);
+
+            let self_rules = self_pred.and_then(|p| self.rules.get(&p));
+            let other_rules = other_pred.and_then(|p| other.rules.get(&p));
+
+            let (selected_rules, symbol_map) = match (self_rules, other_rules) {
+                (Some(rules), None) => (rules, &symbol_map_self),
+                (None, Some(rules)) => (rules, &symbol_map_other),
+                (Some(self_r), Some(other_r)) => {
+                    if self.rng.random::<f64>() < config.rule_bias {
+                        (self_r, &symbol_map_self)
+                    } else {
+                        (other_r, &symbol_map_other)
+                    }
+                }
+                (None, None) => continue,
+            };
+
+            // Remap and insert rules
+            let mut remapped_rules: Vec<RuntimeRule> = Vec::new();
+            for rule in selected_rules {
+                let remapped = RuntimeRule {
+                    predecessor: *symbol_map
+                        .get(&rule.predecessor)
+                        .unwrap_or(&rule.predecessor),
+                    left_context: rule
+                        .left_context
+                        .iter()
+                        .map(|s| *symbol_map.get(s).unwrap_or(s))
+                        .collect(),
+                    right_context: rule
+                        .right_context
+                        .iter()
+                        .map(|s| *symbol_map.get(s).unwrap_or(s))
+                        .collect(),
+                    probability: rule.probability,
+                    condition: rule.condition.clone(),
+                    successors: rule
+                        .successors
+                        .iter()
+                        .map(|s| RuntimeModule {
+                            symbol: *symbol_map.get(&s.symbol).unwrap_or(&s.symbol),
+                            params: s.params.clone(),
+                        })
+                        .collect(),
+                    expected_arities: rule.expected_arities.clone(),
+                };
+                remapped_rules.push(remapped);
+            }
+
+            offspring.rules.insert(new_pred, remapped_rules);
+        }
+
+        // Blend constants
+        let mut all_constant_keys: Vec<String> = self.constants.keys().cloned().collect();
+        for key in other.constants.keys() {
+            if !all_constant_keys.contains(key) {
+                all_constant_keys.push(key.clone());
+            }
+        }
+
+        for key in all_constant_keys {
+            let val_a = self.constants.get(&key).copied();
+            let val_b = other.constants.get(&key).copied();
+
+            let blended = match (val_a, val_b) {
+                (Some(a), Some(b)) => a * (1.0 - config.constant_blend) + b * config.constant_blend,
+                (Some(a), None) => a,
+                (None, Some(b)) => b,
+                (None, None) => continue,
+            };
+            offspring.constants.insert(key, blended);
+        }
+
+        // Remap ignored symbols
+        offspring.ignored_symbols = self
+            .ignored_symbols
+            .iter()
+            .filter_map(|s| symbol_map_self.get(s).copied())
+            .collect();
+
+        offspring
+    }
+
+    /// Mutates the system using an external RNG for reproducibility.
+    ///
+    /// This variant allows using a shared RNG across multiple systems
+    /// for coordinated evolution experiments.
+    pub fn mutate_with_rng<R: Rng>(&mut self, rng: &mut R, config: &MutationConfig) {
+        for rules in self.rules.values_mut() {
+            for rule in rules.iter_mut() {
+                if rng.random::<f64>() < config.rule_probability_rate {
+                    let delta = rng.random_range(
+                        -config.rule_probability_strength..=config.rule_probability_strength,
+                    );
+                    rule.probability = (rule.probability + delta).clamp(0.0, 1.0);
+                }
+            }
+        }
+
+        let constant_keys: Vec<String> = self.constants.keys().cloned().collect();
+        for key in constant_keys {
+            if rng.random::<f64>() < config.constant_rate {
+                if let Some(val) = self.constants.get_mut(&key) {
+                    let factor = 1.0
+                        + rng.random_range(-config.constant_strength..=config.constant_strength);
+                    *val *= factor;
+                }
+            }
+        }
+    }
+
+    /// Performs crossover using an external RNG for reproducibility.
+    pub fn crossover_with_rng<R: Rng>(
+        &self,
+        other: &System,
+        rng: &mut R,
+        config: &CrossoverConfig,
+    ) -> System {
+        let mut offspring = System::new();
+        offspring.rng = Pcg64::seed_from_u64(rng.random());
+        offspring.max_capacity = self.max_capacity.max(other.max_capacity);
+
+        let mut symbol_map_self: HashMap<u16, u16> = HashMap::new();
+        let mut symbol_map_other: HashMap<u16, u16> = HashMap::new();
+
+        for (old_id, name) in self.interner.iter() {
+            let new_id = offspring.interner.get_or_intern(name).unwrap_or(old_id);
+            symbol_map_self.insert(old_id, new_id);
+        }
+
+        for (old_id, name) in other.interner.iter() {
+            let new_id = offspring.interner.get_or_intern(name).unwrap_or(old_id);
+            symbol_map_other.insert(old_id, new_id);
+        }
+
+        let mut all_predecessors: Vec<u16> = Vec::new();
+        for &pred in self.rules.keys() {
+            if let Some(&new_pred) = symbol_map_self.get(&pred) {
+                if !all_predecessors.contains(&new_pred) {
+                    all_predecessors.push(new_pred);
+                }
+            }
+        }
+        for &pred in other.rules.keys() {
+            if let Some(&new_pred) = symbol_map_other.get(&pred) {
+                if !all_predecessors.contains(&new_pred) {
+                    all_predecessors.push(new_pred);
+                }
+            }
+        }
+
+        for new_pred in all_predecessors {
+            let self_pred = symbol_map_self
+                .iter()
+                .find(|(_, v)| **v == new_pred)
+                .map(|(k, _)| *k);
+            let other_pred = symbol_map_other
+                .iter()
+                .find(|(_, v)| **v == new_pred)
+                .map(|(k, _)| *k);
+
+            let self_rules = self_pred.and_then(|p| self.rules.get(&p));
+            let other_rules = other_pred.and_then(|p| other.rules.get(&p));
+
+            let (selected_rules, symbol_map) = match (self_rules, other_rules) {
+                (Some(rules), None) => (rules, &symbol_map_self),
+                (None, Some(rules)) => (rules, &symbol_map_other),
+                (Some(self_r), Some(other_r)) => {
+                    if rng.random::<f64>() < config.rule_bias {
+                        (self_r, &symbol_map_self)
+                    } else {
+                        (other_r, &symbol_map_other)
+                    }
+                }
+                (None, None) => continue,
+            };
+
+            let mut remapped_rules: Vec<RuntimeRule> = Vec::new();
+            for rule in selected_rules {
+                let remapped = RuntimeRule {
+                    predecessor: *symbol_map
+                        .get(&rule.predecessor)
+                        .unwrap_or(&rule.predecessor),
+                    left_context: rule
+                        .left_context
+                        .iter()
+                        .map(|s| *symbol_map.get(s).unwrap_or(s))
+                        .collect(),
+                    right_context: rule
+                        .right_context
+                        .iter()
+                        .map(|s| *symbol_map.get(s).unwrap_or(s))
+                        .collect(),
+                    probability: rule.probability,
+                    condition: rule.condition.clone(),
+                    successors: rule
+                        .successors
+                        .iter()
+                        .map(|s| RuntimeModule {
+                            symbol: *symbol_map.get(&s.symbol).unwrap_or(&s.symbol),
+                            params: s.params.clone(),
+                        })
+                        .collect(),
+                    expected_arities: rule.expected_arities.clone(),
+                };
+                remapped_rules.push(remapped);
+            }
+
+            offspring.rules.insert(new_pred, remapped_rules);
+        }
+
+        let mut all_constant_keys: Vec<String> = self.constants.keys().cloned().collect();
+        for key in other.constants.keys() {
+            if !all_constant_keys.contains(key) {
+                all_constant_keys.push(key.clone());
+            }
+        }
+
+        for key in all_constant_keys {
+            let val_a = self.constants.get(&key).copied();
+            let val_b = other.constants.get(&key).copied();
+
+            let blended = match (val_a, val_b) {
+                (Some(a), Some(b)) => a * (1.0 - config.constant_blend) + b * config.constant_blend,
+                (Some(a), None) => a,
+                (None, Some(b)) => b,
+                (None, None) => continue,
+            };
+            offspring.constants.insert(key, blended);
+        }
+
+        offspring.ignored_symbols = self
+            .ignored_symbols
+            .iter()
+            .filter_map(|s| symbol_map_self.get(s).copied())
+            .collect();
+
+        offspring
     }
 }
