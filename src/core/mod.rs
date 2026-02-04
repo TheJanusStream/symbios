@@ -105,6 +105,11 @@ impl SymbiosState {
             return Err(SymbiosError::ParameterOverflow(parameters.len(), u16::MAX));
         }
 
+        // Explicit truncation guard: ensure params.len() fits in u32 before cast
+        // (defense in depth against any bypassed capacity checks)
+        if self.params.len() > u32::MAX as usize {
+            return Err(SymbiosError::CapacityOverflow);
+        }
         let param_start = self.params.len() as u32;
         self.params.extend_from_slice(parameters);
 

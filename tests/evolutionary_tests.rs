@@ -1063,3 +1063,172 @@ fn test_structural_mutate_axiom_only_symbol_arity() {
         "Should have inserted at least one X module across 100 seeds"
     );
 }
+
+/// Tests that crossover correctly transfers symbol_arities from parents.
+///
+/// This addresses the "Genetic Metadata Corruption" issue: offspring must inherit
+/// the symbol_arities map from parents so that subsequent structural mutations
+/// generate modules with correct parameter counts.
+#[test]
+fn test_crossover_preserves_symbol_arities() {
+    use rand::SeedableRng;
+    use rand_pcg::Pcg64;
+
+    // Parent A has a 2-parameter symbol
+    let mut parent_a = System::new();
+    parent_a.add_rule("A(x, y) -> A(x + 1, y)").unwrap();
+    parent_a.set_axiom("A(1, 2)").unwrap();
+
+    // Parent B has a different 3-parameter symbol
+    let mut parent_b = System::new();
+    parent_b.add_rule("B(a, b, c) -> B(a, b, c + 1)").unwrap();
+    parent_b.set_axiom("B(1, 2, 3)").unwrap();
+
+    let config = CrossoverConfig::default();
+    let offspring = parent_a.crossover(&parent_b, &config).unwrap();
+
+    // Now mutate the offspring with high insert rate
+    let mutated_offspring = offspring;
+    let mutation_config = StructuralMutationConfig {
+        successor_rate: 1.0,
+        swap_rate: 0.0,
+        insert_rate: 1.0,
+        delete_rate: 0.0,
+        bytecode_rate: 0.0,
+        op_rate: 0.0,
+        push_perturbation: 0.0,
+    };
+
+    // Run mutations with various seeds to ensure both A and B symbols get inserted
+    for seed in 0..50 {
+        let mut test_offspring = mutated_offspring.clone();
+        let mut rng = Pcg64::seed_from_u64(seed);
+        test_offspring.structural_mutate_with_rng(&mut rng, &mutation_config);
+
+        // Check all rules for correct arities
+        for rules in test_offspring.rules.values() {
+            for rule in rules {
+                for successor in &rule.successors {
+                    let sym_name = test_offspring.interner.resolve(successor.symbol);
+                    match sym_name {
+                        Some("A") => {
+                            assert_eq!(
+                                successor.params.len(),
+                                2,
+                                "Inserted A in offspring should have 2 params (seed {})",
+                                seed
+                            );
+                        }
+                        Some("B") => {
+                            assert_eq!(
+                                successor.params.len(),
+                                3,
+                                "Inserted B in offspring should have 3 params (seed {})",
+                                seed
+                            );
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Tests that structural mutation does not produce infinite values.
+///
+/// This addresses the "Floating Point Poisoning" DoS vulnerability: repeated
+/// perturbations of Push constants could overflow to Infinity, causing VMError
+/// during derivation. The fix ensures only finite values are committed.
+#[test]
+fn test_structural_mutate_prevents_infinity_poisoning() {
+    use rand::SeedableRng;
+    use rand_pcg::Pcg64;
+    use symbios::vm::Op;
+
+    let mut sys = System::new();
+    // Start with a value close to f64::MAX
+    sys.add_rule("A(x) -> A(x)").unwrap();
+    sys.set_axiom("A(0)").unwrap();
+
+    let a_sym = sys.interner.resolve_id("A").unwrap();
+
+    // Manually inject a near-max Push value into the bytecode
+    sys.rules.get_mut(&a_sym).unwrap()[0].successors[0].params[0] = vec![Op::Push(f64::MAX / 2.0)];
+
+    // Use extreme perturbation that would overflow to Infinity
+    let config = StructuralMutationConfig {
+        successor_rate: 1.0,
+        swap_rate: 0.0,
+        insert_rate: 0.0,
+        delete_rate: 0.0,
+        bytecode_rate: 1.0,
+        op_rate: 1.0,
+        push_perturbation: f64::MAX, // Extreme perturbation
+    };
+
+    // Run many mutations - without the fix, this would eventually produce Inf
+    for seed in 0..100 {
+        let mut rng = Pcg64::seed_from_u64(seed);
+        sys.structural_mutate_with_rng(&mut rng, &config);
+
+        // Check that all Push values remain finite
+        for rules in sys.rules.values() {
+            for rule in rules {
+                for successor in &rule.successors {
+                    for param_bytecode in &successor.params {
+                        for op in param_bytecode {
+                            if let Op::Push(val) = op {
+                                assert!(
+                                    val.is_finite(),
+                                    "Push value {} is not finite after mutation (seed {})",
+                                    val,
+                                    seed
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Tests that derivation succeeds after many structural mutations without Inf poisoning.
+#[test]
+fn test_derive_succeeds_after_heavy_mutation() {
+    use rand::SeedableRng;
+    use rand_pcg::Pcg64;
+
+    let mut sys = System::new();
+    sys.add_rule("A(x) -> A(x + 1) B(x * 2)").unwrap();
+    sys.add_rule("B(y) -> B(y - 1)").unwrap();
+    sys.set_axiom("A(100)").unwrap();
+
+    let config = StructuralMutationConfig {
+        successor_rate: 1.0,
+        swap_rate: 0.5,
+        insert_rate: 0.3,
+        delete_rate: 0.2,
+        bytecode_rate: 1.0,
+        op_rate: 0.5,
+        push_perturbation: 1000.0, // Large but not extreme
+    };
+
+    // Apply many mutations
+    for seed in 0..50 {
+        let mut rng = Pcg64::seed_from_u64(seed);
+        sys.structural_mutate_with_rng(&mut rng, &config);
+    }
+
+    // Reset to axiom and attempt derivation
+    sys.reset();
+    let result = sys.derive(5);
+
+    // Derivation should not fail due to Infinity/NaN in bytecode
+    assert!(
+        result.is_ok(),
+        "Derivation should succeed after heavy mutation: {:?}",
+        result.err()
+    );
+}

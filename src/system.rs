@@ -4,7 +4,7 @@ use crate::parser::{self, ast};
 use crate::vm::{Compiler, Op};
 use rand::{Rng, SeedableRng};
 use rand_pcg::Pcg64;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 
 /// Maximum number of successors allowed per rule (DoS protection).
@@ -1176,11 +1176,18 @@ impl System {
                 continue;
             }
             *op = match op {
-                // Perturb Push constants
+                // Perturb Push constants (with finiteness check to prevent Inf poisoning)
                 Op::Push(val) => {
-                    let delta =
-                        rng.random_range(-config.push_perturbation..=config.push_perturbation);
-                    Op::Push(*val + delta)
+                    // Clamp perturbation range to prevent overflow in random_range
+                    let safe_perturbation = config.push_perturbation.min(1e100);
+                    let delta = rng.random_range(-safe_perturbation..=safe_perturbation);
+                    let new_val = *val + delta;
+                    // Only apply mutation if result is finite; otherwise keep original
+                    if new_val.is_finite() {
+                        Op::Push(new_val)
+                    } else {
+                        continue;
+                    }
                 }
                 // Swap arithmetic operations
                 Op::Add => Self::random_arithmetic_op(rng),
@@ -1278,19 +1285,16 @@ impl System {
             symbol_map_other.insert(old_id, new_id);
         }
 
-        let mut all_predecessors: Vec<u16> = Vec::new();
+        // Use HashSet for O(1) lookup instead of O(N) Vec::contains
+        let mut all_predecessors: HashSet<u16> = HashSet::new();
         for &pred in self.rules.keys() {
-            if let Some(&new_pred) = symbol_map_self.get(&pred)
-                && !all_predecessors.contains(&new_pred)
-            {
-                all_predecessors.push(new_pred);
+            if let Some(&new_pred) = symbol_map_self.get(&pred) {
+                all_predecessors.insert(new_pred);
             }
         }
         for &pred in other.rules.keys() {
-            if let Some(&new_pred) = symbol_map_other.get(&pred)
-                && !all_predecessors.contains(&new_pred)
-            {
-                all_predecessors.push(new_pred);
+            if let Some(&new_pred) = symbol_map_other.get(&pred) {
+                all_predecessors.insert(new_pred);
             }
         }
 
@@ -1405,6 +1409,20 @@ impl System {
         }
 
         offspring.ignored_symbols = new_ignored;
+
+        // Merge symbol_arities from both parents (fixes genetic metadata corruption)
+        // Map old symbol IDs to new IDs and merge arities
+        for (&old_id, &arity) in &self.symbol_arities {
+            if let Some(&new_id) = symbol_map_self.get(&old_id) {
+                offspring.symbol_arities.insert(new_id, arity);
+            }
+        }
+        for (&old_id, &arity) in &other.symbol_arities {
+            if let Some(&new_id) = symbol_map_other.get(&old_id) {
+                // Only insert if not already present (self takes precedence)
+                offspring.symbol_arities.entry(new_id).or_insert(arity);
+            }
+        }
 
         Ok(offspring)
     }
