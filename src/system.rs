@@ -101,6 +101,8 @@ pub struct System {
     gen_right_indices: Vec<usize>,
     /// Reusable buffer for successor parameters.
     gen_new_params: Vec<f64>,
+    /// Reusable buffer for candidate rule indices during derivation.
+    derive_candidate_indices: Vec<usize>,
     /// Stored initial axiom state for reset functionality.
     initial_state: Option<SymbiosState>,
     /// Known arities for symbols (symbol ID -> expected parameter count).
@@ -131,6 +133,7 @@ impl System {
             gen_left_indices: Vec::new(),
             gen_right_indices: Vec::new(),
             gen_new_params: Vec::new(),
+            derive_candidate_indices: Vec::new(),
             initial_state: None,
             symbol_arities: HashMap::new(),
         }
@@ -179,11 +182,14 @@ impl System {
                     .get_view(index)
                     .ok_or(crate::core::SymbiosError::InvalidIndex(index))?;
 
-                let mut candidates: Vec<&RuntimeRule> = Vec::new();
+                // Reuse scratch buffer for candidate indices (avoids per-module allocation)
+                self.derive_candidate_indices.clear();
                 let mut total_probability = 0.0;
+                // Track the last matched rule index to enable scratch buffer reuse
+                let mut last_matched_idx: Option<usize> = None;
 
                 if let Some(bucket) = self.rules.get(&view.sym) {
-                    for rule in bucket {
+                    for (rule_idx, rule) in bucket.iter().enumerate() {
                         // view.sym is guaranteed to match rule.predecessor here
                         let is_match = matching::matches(
                             &self.state,
@@ -195,28 +201,51 @@ impl System {
                         )?;
 
                         if is_match {
-                            candidates.push(rule);
+                            self.derive_candidate_indices.push(rule_idx);
                             total_probability += rule.probability;
+                            last_matched_idx = Some(rule_idx);
                         }
                     }
                 }
 
-                let selected_rule = if candidates.is_empty() || total_probability <= 0.0 {
-                    None
-                } else if candidates.len() == 1 {
-                    Some(candidates[0])
-                } else {
-                    let mut r = self.rng.random_range(0.0..total_probability);
-                    let mut winner = None;
-                    for rule in &candidates {
-                        if r < rule.probability {
-                            winner = Some(*rule);
-                            break;
+                // Select rule from candidates using indices, tracking which index was selected
+                let (selected_rule, selected_idx): (Option<&RuntimeRule>, Option<usize>) =
+                    if self.derive_candidate_indices.is_empty() || total_probability <= 0.0 {
+                        (None, None)
+                    } else if self.derive_candidate_indices.len() == 1 {
+                        let idx = self.derive_candidate_indices[0];
+                        (
+                            self.rules.get(&view.sym).and_then(|b| b.get(idx)),
+                            Some(idx),
+                        )
+                    } else {
+                        let bucket = self.rules.get(&view.sym);
+                        let mut r = self.rng.random_range(0.0..total_probability);
+                        let mut winner = None;
+                        let mut winner_idx = None;
+                        for &rule_idx in &self.derive_candidate_indices {
+                            if let Some(rule) = bucket.and_then(|b| b.get(rule_idx)) {
+                                if r < rule.probability {
+                                    winner = Some(rule);
+                                    winner_idx = Some(rule_idx);
+                                    break;
+                                }
+                                r -= rule.probability;
+                            }
                         }
-                        r -= rule.probability;
-                    }
-                    winner.or_else(|| candidates.last().copied())
-                };
+                        if winner.is_none() {
+                            let fallback_idx = self.derive_candidate_indices.last().copied();
+                            (
+                                bucket.and_then(|b| fallback_idx.and_then(|i| b.get(i))),
+                                fallback_idx,
+                            )
+                        } else {
+                            (winner, winner_idx)
+                        }
+                    };
+
+                // Check if we can reuse scratch indices (selected rule was last matched)
+                let can_reuse_scratch = selected_idx == last_matched_idx;
 
                 if let Some(rule) = selected_rule {
                     // Clear and reuse generation buffers
@@ -224,15 +253,22 @@ impl System {
                     self.gen_context_frame.extend_from_slice(view.params);
 
                     if !rule.left_context.is_empty() {
-                        self.gen_left_indices.clear();
-                        matching::match_left(
-                            &self.state,
-                            index,
-                            &rule.left_context,
-                            &self.ignored_symbols,
-                            &mut self.gen_left_indices,
-                        );
-                        for &i in &self.gen_left_indices {
+                        // Optimization: reuse scratch indices if selected rule was last matched,
+                        // avoiding redundant context matching (O(L) per module savings)
+                        let left_indices: &[usize] = if can_reuse_scratch {
+                            &self.scratch.left_indices
+                        } else {
+                            self.gen_left_indices.clear();
+                            matching::match_left(
+                                &self.state,
+                                index,
+                                &rule.left_context,
+                                &self.ignored_symbols,
+                                &mut self.gen_left_indices,
+                            );
+                            &self.gen_left_indices
+                        };
+                        for &i in left_indices {
                             let ctx_view = self
                                 .state
                                 .get_view(i)
@@ -242,15 +278,21 @@ impl System {
                     }
 
                     if !rule.right_context.is_empty() {
-                        self.gen_right_indices.clear();
-                        matching::match_right(
-                            &self.state,
-                            index,
-                            &rule.right_context,
-                            &self.ignored_symbols,
-                            &mut self.gen_right_indices,
-                        );
-                        for &i in &self.gen_right_indices {
+                        // Optimization: reuse scratch indices if selected rule was last matched
+                        let right_indices: &[usize] = if can_reuse_scratch {
+                            &self.scratch.right_indices
+                        } else {
+                            self.gen_right_indices.clear();
+                            matching::match_right(
+                                &self.state,
+                                index,
+                                &rule.right_context,
+                                &self.ignored_symbols,
+                                &mut self.gen_right_indices,
+                            );
+                            &self.gen_right_indices
+                        };
+                        for &i in right_indices {
                             let ctx_view = self
                                 .state
                                 .get_view(i)
@@ -788,6 +830,7 @@ impl Clone for System {
             gen_left_indices: Vec::new(),
             gen_right_indices: Vec::new(),
             gen_new_params: Vec::new(),
+            derive_candidate_indices: Vec::new(),
             initial_state: self.initial_state.clone(),
             symbol_arities: self.symbol_arities.clone(),
         }
@@ -1316,6 +1359,10 @@ impl System {
             reverse
         };
 
+        // Track which parent contributed rules for each symbol (for consistent arity inheritance)
+        let mut rules_from_self: HashSet<u16> = HashSet::new();
+        let mut rules_from_other: HashSet<u16> = HashSet::new();
+
         for new_pred in all_predecessors {
             let self_pred = reverse_map_self.get(new_pred as usize).copied().flatten();
             let other_pred = reverse_map_other.get(new_pred as usize).copied().flatten();
@@ -1323,18 +1370,25 @@ impl System {
             let self_rules = self_pred.and_then(|p| self.rules.get(&p));
             let other_rules = other_pred.and_then(|p| other.rules.get(&p));
 
-            let (selected_rules, symbol_map) = match (self_rules, other_rules) {
-                (Some(rules), None) => (rules, &symbol_map_self),
-                (None, Some(rules)) => (rules, &symbol_map_other),
+            let (selected_rules, symbol_map, from_self) = match (self_rules, other_rules) {
+                (Some(rules), None) => (rules, &symbol_map_self, true),
+                (None, Some(rules)) => (rules, &symbol_map_other, false),
                 (Some(self_r), Some(other_r)) => {
                     if rng.random::<f64>() < config.rule_bias {
-                        (self_r, &symbol_map_self)
+                        (self_r, &symbol_map_self, true)
                     } else {
-                        (other_r, &symbol_map_other)
+                        (other_r, &symbol_map_other, false)
                     }
                 }
                 (None, None) => continue,
             };
+
+            // Track rule source for arity consistency
+            if from_self {
+                rules_from_self.insert(new_pred);
+            } else {
+                rules_from_other.insert(new_pred);
+            }
 
             let mut remapped_rules: Vec<RuntimeRule> = Vec::new();
             for rule in selected_rules {
@@ -1410,17 +1464,30 @@ impl System {
 
         offspring.ignored_symbols = new_ignored;
 
-        // Merge symbol_arities from both parents (fixes genetic metadata corruption)
-        // Map old symbol IDs to new IDs and merge arities
+        // Merge symbol_arities from both parents with rule-consistent inheritance.
+        // For symbols with rules, use arity from the parent whose rules were selected.
+        // This prevents arity mismatches where structural_mutate inserts modules
+        // with parameter counts that don't match inherited rules.
         for (&old_id, &arity) in &self.symbol_arities {
             if let Some(&new_id) = symbol_map_self.get(&old_id) {
-                offspring.symbol_arities.insert(new_id, arity);
+                // For symbols with rules from self, always use self's arity
+                // For other symbols, insert only if not already present
+                if rules_from_self.contains(&new_id) {
+                    offspring.symbol_arities.insert(new_id, arity);
+                } else {
+                    offspring.symbol_arities.entry(new_id).or_insert(arity);
+                }
             }
         }
         for (&old_id, &arity) in &other.symbol_arities {
             if let Some(&new_id) = symbol_map_other.get(&old_id) {
-                // Only insert if not already present (self takes precedence)
-                offspring.symbol_arities.entry(new_id).or_insert(arity);
+                // For symbols with rules from other, always use other's arity
+                // This overrides any arity from self for these symbols
+                if rules_from_other.contains(&new_id) {
+                    offspring.symbol_arities.insert(new_id, arity);
+                } else {
+                    offspring.symbol_arities.entry(new_id).or_insert(arity);
+                }
             }
         }
 

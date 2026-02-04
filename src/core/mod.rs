@@ -183,7 +183,16 @@ impl SymbiosState {
         if !dt.is_finite() || dt < 0.0 {
             return Err(format!("Invalid time step: {}", dt));
         }
-        self.current_time += dt;
+        let new_time = self.current_time + dt;
+        // Prevent overflow to infinity which would permanently brick the system
+        // (push() rejects non-finite birth_time values)
+        if !new_time.is_finite() {
+            return Err(format!(
+                "Time overflow: {} + {} exceeds representable range",
+                self.current_time, dt
+            ));
+        }
+        self.current_time = new_time;
         Ok(())
     }
 
