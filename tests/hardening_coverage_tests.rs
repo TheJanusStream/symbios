@@ -1,6 +1,6 @@
 use symbios::System;
 use symbios::system::matching::{self, MatchScratch};
-use symbios::vm::{Op, MathOp, VirtualMachine};
+use symbios::vm::{MathOp, Op, VirtualMachine};
 
 #[test]
 fn test_vm_param_bounds_check() {
@@ -217,7 +217,10 @@ fn test_explicit_probability_not_overwritten_by_numeric_condition() {
 
         let sym = sys.state.get_view(0).unwrap().sym;
         let a_id = sys.interner.resolve_id("A").unwrap();
-        assert_eq!(sym, a_id, "A should remain A (probability 0.0 rule should never fire)");
+        assert_eq!(
+            sym, a_id,
+            "A should remain A (probability 0.0 rule should never fire)"
+        );
     }
 }
 
