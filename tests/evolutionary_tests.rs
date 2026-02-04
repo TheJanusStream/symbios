@@ -949,3 +949,117 @@ fn test_crossover_no_symbol_aliasing() {
     assert_eq!(offspring.interner.resolve(v0.sym), Some("Beta"));
     assert_eq!(offspring.interner.resolve(v1.sym), Some("Gamma"));
 }
+
+/// Tests that successor-only symbols get correct arity in structural mutation.
+///
+/// This tests the fix for the "Structural Mutation Arity Mismatch" issue:
+/// symbols that only appear in successors (never as predecessors) must still
+/// have their arity tracked so mutations insert them with correct parameter counts.
+#[test]
+fn test_structural_mutate_successor_only_symbol_arity() {
+    use rand::SeedableRng;
+    use rand_pcg::Pcg64;
+
+    let mut sys = System::new();
+    // B(x, y) only appears as a successor, never as a predecessor
+    sys.add_rule("A -> B(1, 2)").unwrap();
+    sys.set_axiom("A").unwrap();
+
+    let a_sym = sys.interner.resolve_id("A").unwrap();
+    let b_sym = sys.interner.resolve_id("B").unwrap();
+
+    // Force insertion with high rate
+    let config = StructuralMutationConfig {
+        successor_rate: 1.0,
+        swap_rate: 0.0,
+        insert_rate: 1.0,
+        delete_rate: 0.0,
+        bytecode_rate: 0.0,
+        op_rate: 0.0,
+        push_perturbation: 0.0,
+    };
+
+    // Run many mutations to ensure B gets inserted at least once
+    let mut found_inserted_b = false;
+    for seed in 0..100 {
+        let mut test_sys = sys.clone();
+        let mut rng = Pcg64::seed_from_u64(seed);
+        test_sys.structural_mutate_with_rng(&mut rng, &config);
+
+        // Check all successors in the rule
+        for successor in &test_sys.rules[&a_sym][0].successors {
+            if successor.symbol == b_sym {
+                // B should have exactly 2 parameters (its arity from the original rule)
+                assert_eq!(
+                    successor.params.len(),
+                    2,
+                    "Successor-only symbol B should have 2 params when inserted (seed {})",
+                    seed
+                );
+                // Only check inserted modules (position > 0 means it was inserted)
+                if test_sys.rules[&a_sym][0].successors.len() > 1 {
+                    found_inserted_b = true;
+                }
+            }
+        }
+    }
+
+    assert!(
+        found_inserted_b,
+        "Should have inserted at least one B module across 100 seeds"
+    );
+}
+
+/// Tests that axiom-only symbols get correct arity in structural mutation.
+///
+/// Symbols that only appear in the axiom (not in any rule predecessor or successor)
+/// must still have their arity tracked for mutation.
+#[test]
+fn test_structural_mutate_axiom_only_symbol_arity() {
+    use rand::SeedableRng;
+    use rand_pcg::Pcg64;
+
+    let mut sys = System::new();
+    // X(a, b, c) only appears in the axiom
+    sys.add_rule("A -> A").unwrap();
+    sys.set_axiom("A X(1, 2, 3)").unwrap();
+
+    let a_sym = sys.interner.resolve_id("A").unwrap();
+    let x_sym = sys.interner.resolve_id("X").unwrap();
+
+    let config = StructuralMutationConfig {
+        successor_rate: 1.0,
+        swap_rate: 0.0,
+        insert_rate: 1.0,
+        delete_rate: 0.0,
+        bytecode_rate: 0.0,
+        op_rate: 0.0,
+        push_perturbation: 0.0,
+    };
+
+    // Run many mutations to ensure X gets inserted at least once
+    let mut found_inserted_x = false;
+    for seed in 0..100 {
+        let mut test_sys = sys.clone();
+        let mut rng = Pcg64::seed_from_u64(seed);
+        test_sys.structural_mutate_with_rng(&mut rng, &config);
+
+        for successor in &test_sys.rules[&a_sym][0].successors {
+            if successor.symbol == x_sym {
+                // X should have exactly 3 parameters (its arity from the axiom)
+                assert_eq!(
+                    successor.params.len(),
+                    3,
+                    "Axiom-only symbol X should have 3 params when inserted (seed {})",
+                    seed
+                );
+                found_inserted_x = true;
+            }
+        }
+    }
+
+    assert!(
+        found_inserted_x,
+        "Should have inserted at least one X module across 100 seeds"
+    );
+}

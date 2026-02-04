@@ -176,3 +176,59 @@ fn test_child_cannot_see_parent() {
         "Logic Defect: Module 'B' inside branch failed to see parent 'A' through '['."
     );
 }
+
+/// Documents that topology-based branch skipping takes precedence over `#ignore`.
+///
+/// When brackets (`[` and `]`) are present in the state, `derive()` automatically
+/// calls `calculate_topology()`, which enables branch-aware context matching.
+/// The topology skip logic takes precedence over the `ignore` list, meaning
+/// `#ignore : [ ]` is silently ineffective for bracket symbols.
+///
+/// This is intentional behavior for correct L-System context matching as described
+/// in ABOP (The Algorithmic Beauty of Plants). The topology logic ensures that:
+/// - A `]` causes a jump to its matching `[` (skipping sibling branches)
+/// - A `[` causes a jump to its matching `]` (skipping child branches)
+///
+/// This test documents this behavior so users understand that:
+/// 1. `#ignore : [ ]` will NOT make brackets ignorable like other symbols
+/// 2. Brackets always participate in topology-aware branch skipping during derive()
+#[test]
+fn test_topology_precedence_over_ignore_directive() {
+    let mut sys = System::new();
+    sys.add_directive("#ignore : [ ]").unwrap();
+    sys.add_rule("A > B -> S").unwrap();
+    sys.set_axiom("A [ X ] B").unwrap();
+
+    // derive() automatically calculates topology when brackets are present
+    sys.derive(1).unwrap();
+    let output = format!("{}", sys.state.display(&sys.interner));
+
+    // Despite #ignore : [ ], brackets still enable branch-aware matching.
+    // A matches B by skipping the branch [X] via topology, not via ignore.
+    assert_eq!(
+        output, "S [ X ] B",
+        "Topology takes precedence: A > B matches because [X] is skipped via topology, \
+         not because brackets are ignored. #ignore : [ ] is ineffective for brackets."
+    );
+}
+
+/// Documents that #ignore works correctly for non-bracket symbols.
+///
+/// Unlike brackets which are handled by topology, regular symbols in the
+/// ignore list are truly skipped during context matching.
+#[test]
+fn test_ignore_directive_works_for_regular_symbols() {
+    let mut sys = System::new();
+    sys.add_directive("#ignore : X").unwrap();
+    sys.add_rule("A > B -> S").unwrap();
+    sys.set_axiom("A X B").unwrap();
+
+    sys.derive(1).unwrap();
+    let output = format!("{}", sys.state.display(&sys.interner));
+
+    // X is ignored, so A > B matches
+    assert_eq!(
+        output, "S X B",
+        "#ignore : X should allow A > B to match by skipping X"
+    );
+}

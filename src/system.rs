@@ -405,11 +405,20 @@ impl System {
             right_context: right_ctx,
             probability: rule_ast.probability,
             condition: condition_code,
-            successors: runtime_successors,
+            successors: runtime_successors.clone(),
             expected_arities,
         };
 
+        // Track predecessor arity
         self.symbol_arities.insert(pred_sym, pred_arity);
+
+        // Track successor arities (fixes arity mismatch for successor-only symbols)
+        for succ in &runtime_successors {
+            self.symbol_arities
+                .entry(succ.symbol)
+                .or_insert(succ.params.len());
+        }
+
         self.rules.entry(pred_sym).or_default().push(new_rule);
 
         Ok(())
@@ -453,6 +462,9 @@ impl System {
 
                 values.push(val);
             }
+
+            // Track axiom symbol arity for structural mutation
+            self.symbol_arities.entry(sym_id).or_insert(values.len());
 
             // Push to state
             self.state.push(sym_id, 0.0, &values)?;
@@ -615,6 +627,22 @@ pub mod matching {
         Ok(true)
     }
 
+    /// Matches a left context pattern against the state, moving backwards from `start_index`.
+    ///
+    /// # Topology Precedence
+    ///
+    /// **Important:** When topology has been calculated via `calculate_topology()`, bracket
+    /// symbols (`[` and `]`) are handled specially for branch-aware context matching. The
+    /// topology skip logic takes precedence over the `ignore` list. This means:
+    ///
+    /// - If you use `#ignore [ ]`, brackets will still be processed by topology rules
+    /// - A `]` causes a jump to its matching `[` (skipping sibling branches)
+    /// - A `[` is transparently stepped over
+    ///
+    /// This behavior is intentional for correct L-System context matching, as described in
+    /// ABOP (The Algorithmic Beauty of Plants). To fully ignore brackets, either:
+    /// 1. Don't call `calculate_topology()` before derivation, or
+    /// 2. Use a linear axiom without branch structure
     pub fn match_left(
         state: &SymbiosState,
         start_index: usize,
@@ -673,6 +701,22 @@ pub mod matching {
         false
     }
 
+    /// Matches a right context pattern against the state, moving forward from `start_index`.
+    ///
+    /// # Topology Precedence
+    ///
+    /// **Important:** When topology has been calculated via `calculate_topology()`, bracket
+    /// symbols (`[` and `]`) are handled specially for branch-aware context matching. The
+    /// topology skip logic takes precedence over the `ignore` list. This means:
+    ///
+    /// - If you use `#ignore [ ]`, brackets will still be processed by topology rules
+    /// - A `[` causes a jump to its matching `]` (skipping child branches)
+    /// - A `]` is transparently stepped over
+    ///
+    /// This behavior is intentional for correct L-System context matching, as described in
+    /// ABOP (The Algorithmic Beauty of Plants). To fully ignore brackets, either:
+    /// 1. Don't call `calculate_topology()` before derivation, or
+    /// 2. Use a linear axiom without branch structure
     pub fn match_right(
         state: &SymbiosState,
         start_index: usize,
@@ -1250,15 +1294,27 @@ impl System {
             }
         }
 
+        // Build reverse mappings (new_id -> old_id) for O(1) lookup instead of O(N) scan
+        let reverse_map_self: Vec<Option<u16>> = {
+            let max_new_id = symbol_map_self.values().max().copied().unwrap_or(0) as usize;
+            let mut reverse = vec![None; max_new_id + 1];
+            for (&old_id, &new_id) in &symbol_map_self {
+                reverse[new_id as usize] = Some(old_id);
+            }
+            reverse
+        };
+        let reverse_map_other: Vec<Option<u16>> = {
+            let max_new_id = symbol_map_other.values().max().copied().unwrap_or(0) as usize;
+            let mut reverse = vec![None; max_new_id + 1];
+            for (&old_id, &new_id) in &symbol_map_other {
+                reverse[new_id as usize] = Some(old_id);
+            }
+            reverse
+        };
+
         for new_pred in all_predecessors {
-            let self_pred = symbol_map_self
-                .iter()
-                .find(|(_, v)| **v == new_pred)
-                .map(|(k, _)| *k);
-            let other_pred = symbol_map_other
-                .iter()
-                .find(|(_, v)| **v == new_pred)
-                .map(|(k, _)| *k);
+            let self_pred = reverse_map_self.get(new_pred as usize).copied().flatten();
+            let other_pred = reverse_map_other.get(new_pred as usize).copied().flatten();
 
             let self_rules = self_pred.and_then(|p| self.rules.get(&p));
             let other_rules = other_pred.and_then(|p| other.rules.get(&p));
