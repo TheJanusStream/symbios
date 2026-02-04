@@ -1,6 +1,6 @@
 use symbios::System;
 use symbios::system::matching::{self, MatchScratch};
-use symbios::vm::{Op, VirtualMachine};
+use symbios::vm::{Op, MathOp, VirtualMachine};
 
 #[test]
 fn test_vm_param_bounds_check() {
@@ -196,4 +196,122 @@ fn test_derive_multiple_candidates_scratch_reuse() {
             assert_eq!(second.params[0], 6.0, "C should have param 2*3=6");
         }
     }
+}
+
+/// Test that explicit probability prefix is preserved when condition is a number.
+/// Bug: "0.9 : A : 1 -> B" was incorrectly overwriting probability 0.9 with condition 1.0.
+#[test]
+fn test_explicit_probability_not_overwritten_by_numeric_condition() {
+    let mut sys = System::new();
+    sys.set_seed(12345);
+
+    // Rule with explicit probability 0.0 and numeric condition 1 (always true).
+    // The probability should remain 0.0, meaning the rule should never fire.
+    sys.add_rule("0.0 : A : 1 -> B").unwrap();
+    sys.set_axiom("A").unwrap();
+
+    // Run multiple derivations - rule should never fire (probability 0.0)
+    for _ in 0..10 {
+        sys.reset();
+        sys.derive(1).unwrap();
+
+        let sym = sys.state.get_view(0).unwrap().sym;
+        let a_id = sys.interner.resolve_id("A").unwrap();
+        assert_eq!(sym, a_id, "A should remain A (probability 0.0 rule should never fire)");
+    }
+}
+
+/// Test that syntactic sugar "A : 0.5 -> B" (condition-as-probability) still works.
+/// Note: In this L-system, probability is a RELATIVE WEIGHT for selecting among
+/// multiple matching rules. A single rule with weight 0.5 fires 100% of the time.
+/// To test probabilistic selection, we need multiple competing rules.
+#[test]
+fn test_condition_as_probability_sugar() {
+    let mut sys = System::new();
+    sys.set_seed(42);
+
+    // Syntactic sugar: condition acts as probability/weight when no explicit prefix given.
+    // With two rules having weights 0.3 and 0.7, we expect ~30%/~70% selection.
+    sys.add_rule("A : 0.3 -> B").unwrap();
+    sys.add_rule("A : 0.7 -> C").unwrap();
+    sys.set_axiom("A").unwrap();
+
+    // Run many derivations and count outcomes
+    let mut b_count = 0;
+    let mut c_count = 0;
+    for _ in 0..100 {
+        sys.reset();
+        sys.derive(1).unwrap();
+
+        let sym = sys.state.get_view(0).unwrap().sym;
+        let b_id = sys.interner.resolve_id("B").unwrap();
+        let c_id = sys.interner.resolve_id("C").unwrap();
+        if sym == b_id {
+            b_count += 1;
+        } else if sym == c_id {
+            c_count += 1;
+        }
+    }
+
+    // With weights 0.3 and 0.7, we expect roughly 30% B and 70% C
+    assert!(
+        b_count > 10 && b_count < 50,
+        "Expected ~30% B's, got {} out of 100",
+        b_count
+    );
+    assert!(
+        c_count > 50 && c_count < 90,
+        "Expected ~70% C's, got {} out of 100",
+        c_count
+    );
+}
+
+/// Test that MathOp::arity() returns correct values for all operations.
+/// This ensures Op::Math cannot have inconsistent arity (API safety fix).
+#[test]
+fn test_math_op_arity_correctness() {
+    // Unary operations should have arity 1
+    assert_eq!(MathOp::Sin.arity(), 1);
+    assert_eq!(MathOp::Cos.arity(), 1);
+    assert_eq!(MathOp::Tan.arity(), 1);
+    assert_eq!(MathOp::Sqrt.arity(), 1);
+    assert_eq!(MathOp::Abs.arity(), 1);
+    assert_eq!(MathOp::Floor.arity(), 1);
+    assert_eq!(MathOp::Ceil.arity(), 1);
+    assert_eq!(MathOp::Round.arity(), 1);
+
+    // Binary operations should have arity 2
+    assert_eq!(MathOp::Min.arity(), 2);
+    assert_eq!(MathOp::Max.arity(), 2);
+}
+
+/// Test that manually constructed Op::Math uses correct arity from MathOp.
+/// Previously, Op::Math(MathOp, u8) allowed mismatched arity values.
+/// Now Op::Math(MathOp) derives arity from the MathOp itself.
+#[test]
+fn test_vm_math_op_stack_consistency() {
+    let mut vm = VirtualMachine::new();
+
+    // Test unary op (sin) with exactly 1 value on stack - should succeed
+    let code = vec![Op::Push(1.0), Op::Math(MathOp::Sin)];
+    let result = vm.eval(&code, &[], 0.0);
+    assert!(result.is_ok(), "sin(1.0) should succeed");
+
+    // Test binary op (max) with exactly 2 values on stack - should succeed
+    let code = vec![Op::Push(1.0), Op::Push(2.0), Op::Math(MathOp::Max)];
+    let result = vm.eval(&code, &[], 0.0);
+    assert!(result.is_ok(), "max(1.0, 2.0) should succeed");
+    assert_eq!(result.unwrap(), 2.0);
+
+    // Test unary op with insufficient stack - should fail with underflow
+    let code = vec![Op::Math(MathOp::Sin)];
+    let result = vm.eval(&code, &[], 0.0);
+    assert!(result.is_err(), "sin() with empty stack should fail");
+    assert!(result.unwrap_err().contains("underflow"));
+
+    // Test binary op with only 1 value - should fail with underflow
+    let code = vec![Op::Push(1.0), Op::Math(MathOp::Max)];
+    let result = vm.eval(&code, &[], 0.0);
+    assert!(result.is_err(), "max() with 1 value should fail");
+    assert!(result.unwrap_err().contains("underflow"));
 }

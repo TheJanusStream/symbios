@@ -12,6 +12,24 @@ pub enum MathOp {
     Max,
 }
 
+impl MathOp {
+    /// Returns the number of arguments this math operation consumes from the stack.
+    #[inline]
+    pub const fn arity(self) -> u8 {
+        match self {
+            MathOp::Sin
+            | MathOp::Cos
+            | MathOp::Tan
+            | MathOp::Sqrt
+            | MathOp::Abs
+            | MathOp::Floor
+            | MathOp::Ceil
+            | MathOp::Round => 1,
+            MathOp::Min | MathOp::Max => 2,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Op {
     // Data
@@ -41,6 +59,5 @@ pub enum Op {
     Not,
 
     // Functions
-    // (Op, Arity) - Arity stored for fast stack check
-    Math(MathOp, u8),
+    Math(MathOp),
 }

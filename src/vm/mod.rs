@@ -125,13 +125,14 @@ impl VirtualMachine {
                     let a = self.pop().map_err(|e| e.to_string())?;
                     self.stack.push(if a == 0.0 { 1.0 } else { 0.0 });
                 }
-                Op::Math(op, arity) => {
-                    // Pre-check stack depth
-                    if self.stack.len() < *arity as usize {
+                Op::Math(math_op) => {
+                    // Pre-check stack depth using authoritative arity from MathOp
+                    let arity = math_op.arity() as usize;
+                    if self.stack.len() < arity {
                         return Err(VMError::StackUnderflow.to_string());
                     }
 
-                    match op {
+                    match math_op {
                         MathOp::Sin => self.unary_op(|a| a.sin()).map_err(|e| e.to_string())?,
                         MathOp::Cos => self.unary_op(|a| a.cos()).map_err(|e| e.to_string())?,
                         MathOp::Tan => self.unary_op(|a| a.tan()).map_err(|e| e.to_string())?,

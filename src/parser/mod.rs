@@ -266,6 +266,7 @@ fn parse_module_impl(input: &str, depth: usize) -> IResult<&str, ModuleSym> {
 
 fn parse_rule_structure(input: &str) -> IResult<&str, Rule> {
     let mut probability = 1.0;
+    let mut has_explicit_probability = false;
     let mut input = input;
 
     // Optional Probability
@@ -273,6 +274,7 @@ fn parse_rule_structure(input: &str) -> IResult<&str, Rule> {
         terminated(ws(finite_float), ws(c_char::<&str, Error<&str>>(':'))).parse(input)
     {
         probability = p;
+        has_explicit_probability = true;
         input = next;
     }
 
@@ -311,8 +313,13 @@ fn parse_rule_structure(input: &str) -> IResult<&str, Rule> {
     ))
     .parse(input)?;
 
-    if let Some(Expr::Number(n)) = condition {
-        probability = n;
+    // Only use numeric condition as probability if no explicit prefix was given.
+    // This supports syntactic sugar like "A : 0.5 -> B" (condition-as-probability),
+    // while preserving explicit prefixes like "0.9 : A : 1 -> B".
+    if let Some(Expr::Number(n)) = &condition
+        && !has_explicit_probability
+    {
+        probability = *n;
     }
 
     // Arrow

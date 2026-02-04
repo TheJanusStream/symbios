@@ -101,7 +101,7 @@ impl<'a> Decompiler<'a> {
                     let val = self.pop_unary(&mut stack)?;
                     stack.push(Expr::Not(Box::new(val)));
                 }
-                Op::Math(math_op, arity) => {
+                Op::Math(math_op) => {
                     let name = match math_op {
                         MathOp::Sin => "sin",
                         MathOp::Cos => "cos",
@@ -115,8 +115,9 @@ impl<'a> Decompiler<'a> {
                         MathOp::Max => "max",
                     };
 
-                    let mut args = Vec::with_capacity(*arity as usize);
-                    for _ in 0..*arity {
+                    let arity = math_op.arity();
+                    let mut args = Vec::with_capacity(arity as usize);
+                    for _ in 0..arity {
                         args.push(
                             stack
                                 .pop()
@@ -273,7 +274,7 @@ mod tests {
     #[test]
     fn test_decompile_math_unary() {
         // sin(x)
-        let ops = vec![Op::LoadParam(0), Op::Math(MathOp::Sin, 1)];
+        let ops = vec![Op::LoadParam(0), Op::Math(MathOp::Sin)];
         let params = vec!["x".into()];
         let expr = decompile_with_params(&ops, &params).unwrap();
         assert_eq!(
@@ -285,7 +286,7 @@ mod tests {
     #[test]
     fn test_decompile_math_binary() {
         // max(x, y)
-        let ops = vec![Op::LoadParam(0), Op::LoadParam(1), Op::Math(MathOp::Max, 2)];
+        let ops = vec![Op::LoadParam(0), Op::LoadParam(1), Op::Math(MathOp::Max)];
         let params = vec!["x".into(), "y".into()];
         let expr = decompile_with_params(&ops, &params).unwrap();
         assert_eq!(

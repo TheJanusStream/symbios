@@ -116,69 +116,29 @@ impl<'a> Compiler<'a> {
                 }
 
                 // Map name to Op
-                match name.as_str() {
-                    "sin" => {
-                        if args.len() != 1 {
-                            return Err("sin takes 1 argument".into());
-                        }
-                        ops.push(Op::Math(MathOp::Sin, 1));
-                    }
-                    "cos" => {
-                        if args.len() != 1 {
-                            return Err("cos takes 1 argument".into());
-                        }
-                        ops.push(Op::Math(MathOp::Cos, 1));
-                    }
-                    "tan" => {
-                        if args.len() != 1 {
-                            return Err("tan takes 1 argument".into());
-                        }
-                        ops.push(Op::Math(MathOp::Tan, 1));
-                    }
-                    "sqrt" => {
-                        if args.len() != 1 {
-                            return Err("sqrt takes 1 argument".into());
-                        }
-                        ops.push(Op::Math(MathOp::Sqrt, 1));
-                    }
-                    "abs" => {
-                        if args.len() != 1 {
-                            return Err("abs takes 1 argument".into());
-                        }
-                        ops.push(Op::Math(MathOp::Abs, 1));
-                    }
-                    "floor" => {
-                        if args.len() != 1 {
-                            return Err("floor takes 1 argument".into());
-                        }
-                        ops.push(Op::Math(MathOp::Floor, 1));
-                    }
-                    "ceil" => {
-                        if args.len() != 1 {
-                            return Err("ceil takes 1 argument".into());
-                        }
-                        ops.push(Op::Math(MathOp::Ceil, 1));
-                    }
-                    "round" => {
-                        if args.len() != 1 {
-                            return Err("round takes 1 argument".into());
-                        }
-                        ops.push(Op::Math(MathOp::Round, 1));
-                    }
-                    "min" => {
-                        if args.len() != 2 {
-                            return Err("min takes 2 arguments".into());
-                        }
-                        ops.push(Op::Math(MathOp::Min, 2));
-                    }
-                    "max" => {
-                        if args.len() != 2 {
-                            return Err("max takes 2 arguments".into());
-                        }
-                        ops.push(Op::Math(MathOp::Max, 2));
-                    }
+                let math_op = match name.as_str() {
+                    "sin" => MathOp::Sin,
+                    "cos" => MathOp::Cos,
+                    "tan" => MathOp::Tan,
+                    "sqrt" => MathOp::Sqrt,
+                    "abs" => MathOp::Abs,
+                    "floor" => MathOp::Floor,
+                    "ceil" => MathOp::Ceil,
+                    "round" => MathOp::Round,
+                    "min" => MathOp::Min,
+                    "max" => MathOp::Max,
                     _ => return Err(format!("Unknown function: {}", name)),
+                };
+                let expected_arity = math_op.arity() as usize;
+                if args.len() != expected_arity {
+                    return Err(format!(
+                        "{} takes {} argument{}",
+                        name,
+                        expected_arity,
+                        if expected_arity == 1 { "" } else { "s" }
+                    ));
                 }
+                ops.push(Op::Math(math_op));
             }
         }
         Ok(())
