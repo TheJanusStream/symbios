@@ -21,6 +21,15 @@ impl System {
     /// To implement probabilistic identity (e.g., "30% chance to transform"),
     /// define an explicit identity rule: `0.7: A -> A` alongside `0.3: A -> B`.
     pub fn derive(&mut self, steps: usize) -> Result<(), SystemError> {
+        // Guard against non-finite current_time (e.g. set directly via pub field).
+        // A non-finite time would propagate NaN through all age calculations,
+        // permanently bricking the state.
+        if !self.state.current_time.is_finite() {
+            return Err(SystemError::State(
+                crate::core::SymbiosError::InvalidNumericValue,
+            ));
+        }
+
         let mut vm = crate::vm::VirtualMachine::new();
         let open_sym = self.interner.resolve_id("[");
         let close_sym = self.interner.resolve_id("]");

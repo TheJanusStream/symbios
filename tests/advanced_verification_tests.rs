@@ -143,7 +143,7 @@ fn test_7_ignore_with_named_modules() {
 }
 
 #[test]
-fn test_8_ignore_list_breaks_topology() {
+fn test_8_ignore_list_disables_topology() {
     let mut sys = System::new();
 
     sys.add_directive("#ignore : [ ]").unwrap();
@@ -156,8 +156,11 @@ fn test_8_ignore_list_breaks_topology() {
 
     let output = format!("{}", sys.state.display(&sys.interner));
 
+    // With #ignore [ ], brackets are skipped as plain symbols (no topology jumps).
+    // Left context scan from C: ] (skip), B (not A, not ignored → mismatch).
+    // A < C does NOT match, so C is unchanged.
     assert_eq!(
-        output, "A [ B ] S",
-        "Logic Defect: Ignoring brackets bypassed the topology skip-link, causing 'C' to see 'B' instead of 'A'."
+        output, "A [ B ] C",
+        "#ignore [ ] disables topology: left context scan hits B before A, so A < C should not match."
     );
 }

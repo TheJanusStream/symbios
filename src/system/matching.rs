@@ -119,20 +119,16 @@ pub fn matches(
 
 /// Matches a left context pattern against the state, moving backwards from `start_index`.
 ///
-/// # Topology Precedence
+/// # Symbol Processing Order
 ///
-/// **Important:** When topology has been calculated via `calculate_topology()`, bracket
-/// symbols (`[` and `]`) are handled specially for branch-aware context matching. The
-/// topology skip logic takes precedence over the `ignore` list. This means:
+/// For each symbol encountered during the backward scan:
+/// 1. **Attempt match** against the current pattern symbol
+/// 2. **Skip ignored symbols** (from `#ignore` directive) — including brackets
+/// 3. **Structural skipping** via topology links for non-ignored brackets
+/// 4. **Mismatch** if none of the above apply
 ///
-/// - If you use `#ignore [ ]`, brackets will still be processed by topology rules
-/// - A `]` causes a jump to its matching `[` (skipping sibling branches)
-/// - A `[` is transparently stepped over
-///
-/// This behavior is intentional for correct L-System context matching, as described in
-/// ABOP (The Algorithmic Beauty of Plants). To fully ignore brackets, either:
-/// 1. Don't call `calculate_topology()` before derivation, or
-/// 2. Use a linear axiom without branch structure
+/// The ignore list is checked before topology links. This means `#ignore [ ]` correctly
+/// disables branch-aware skipping and produces linear context matching.
 pub fn match_left(
     state: &SymbiosState,
     start_index: usize,
@@ -164,7 +160,13 @@ pub fn match_left(
             continue;
         }
 
-        // 2. Structural Skipping (Topology Logic)
+        // 2. Skip ignored symbols (checked before topology so #ignore [ ] works)
+        if ignore.contains(&view.sym) {
+            curr -= 1;
+            continue;
+        }
+
+        // 3. Structural Skipping (Topology Logic, only for non-ignored brackets)
         if let Some(skip_target) = view.skip_idx {
             if skip_target < curr as usize {
                 // We hit a ']', signifying the end of a sibling branch.
@@ -179,12 +181,6 @@ pub fn match_left(
             }
         }
 
-        // 3. Skip ignored symbols
-        if ignore.contains(&view.sym) {
-            curr -= 1;
-            continue;
-        }
-
         // 4. Mismatch
         return false;
     }
@@ -193,20 +189,16 @@ pub fn match_left(
 
 /// Matches a right context pattern against the state, moving forward from `start_index`.
 ///
-/// # Topology Precedence
+/// # Symbol Processing Order
 ///
-/// **Important:** When topology has been calculated via `calculate_topology()`, bracket
-/// symbols (`[` and `]`) are handled specially for branch-aware context matching. The
-/// topology skip logic takes precedence over the `ignore` list. This means:
+/// For each symbol encountered during the forward scan:
+/// 1. **Attempt match** against the current pattern symbol
+/// 2. **Skip ignored symbols** (from `#ignore` directive) — including brackets
+/// 3. **Structural skipping** via topology links for non-ignored brackets
+/// 4. **Mismatch** if none of the above apply
 ///
-/// - If you use `#ignore [ ]`, brackets will still be processed by topology rules
-/// - A `[` causes a jump to its matching `]` (skipping child branches)
-/// - A `]` is transparently stepped over
-///
-/// This behavior is intentional for correct L-System context matching, as described in
-/// ABOP (The Algorithmic Beauty of Plants). To fully ignore brackets, either:
-/// 1. Don't call `calculate_topology()` before derivation, or
-/// 2. Use a linear axiom without branch structure
+/// The ignore list is checked before topology links. This means `#ignore [ ]` correctly
+/// disables branch-aware skipping and produces linear context matching.
 pub fn match_right(
     state: &SymbiosState,
     start_index: usize,
@@ -234,7 +226,13 @@ pub fn match_right(
             continue;
         }
 
-        // 2. Structural Skipping
+        // 2. Skip ignored symbols (checked before topology so #ignore [ ] works)
+        if ignore.contains(&view.sym) {
+            curr += 1;
+            continue;
+        }
+
+        // 3. Structural Skipping (only for non-ignored brackets)
         if let Some(skip_target) = view.skip_idx {
             if skip_target > curr {
                 // We hit a '[', signifying the start of a sibling branch.
@@ -247,12 +245,6 @@ pub fn match_right(
                 curr += 1;
                 continue;
             }
-        }
-
-        // 3. Skip ignored symbols
-        if ignore.contains(&view.sym) {
-            curr += 1;
-            continue;
         }
 
         // 4. Mismatch

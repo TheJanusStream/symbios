@@ -177,38 +177,85 @@ fn test_child_cannot_see_parent() {
     );
 }
 
-/// Documents that topology-based branch skipping takes precedence over `#ignore`.
+/// Verifies that `#ignore [ ]` disables topology-based branch skipping.
 ///
-/// When brackets (`[` and `]`) are present in the state, `derive()` automatically
-/// calls `calculate_topology()`, which enables branch-aware context matching.
-/// The topology skip logic takes precedence over the `ignore` list, meaning
-/// `#ignore : [ ]` is silently ineffective for bracket symbols.
-///
-/// This is intentional behavior for correct L-System context matching as described
-/// in ABOP (The Algorithmic Beauty of Plants). The topology logic ensures that:
-/// - A `]` causes a jump to its matching `[` (skipping sibling branches)
-/// - A `[` causes a jump to its matching `]` (skipping child branches)
-///
-/// This test documents this behavior so users understand that:
-/// 1. `#ignore : [ ]` will NOT make brackets ignorable like other symbols
-/// 2. Brackets always participate in topology-aware branch skipping during derive()
+/// When brackets are in the ignore list, they are skipped as plain symbols
+/// (not followed via topology links), producing linear context matching.
+/// With `A [ X ] B` and `#ignore [ ]`, the effective scan from A sees:
+/// `[` (skip), `X` (not B, not ignored → mismatch). So `A > B` does NOT match.
 #[test]
-fn test_topology_precedence_over_ignore_directive() {
+fn test_ignore_directive_disables_topology_for_brackets() {
     let mut sys = System::new();
     sys.add_directive("#ignore : [ ]").unwrap();
     sys.add_rule("A > B -> S").unwrap();
     sys.set_axiom("A [ X ] B").unwrap();
 
-    // derive() automatically calculates topology when brackets are present
     sys.derive(1).unwrap();
     let output = format!("{}", sys.state.display(&sys.interner));
 
-    // Despite #ignore : [ ], brackets still enable branch-aware matching.
-    // A matches B by skipping the branch [X] via topology, not via ignore.
+    // With #ignore [ ], brackets are skipped as plain symbols.
+    // X blocks the match between A and B, so A is NOT replaced.
+    assert_eq!(
+        output, "A [ X ] B",
+        "#ignore [ ] should disable topology: A > B must not match because X is between them"
+    );
+}
+
+/// Verifies that `#ignore [ ] X` allows matching through branches linearly.
+///
+/// When both brackets and intervening symbols are ignored, the linear scan
+/// skips all of them, allowing context to match across the branch.
+#[test]
+fn test_ignore_brackets_and_contents_enables_linear_match() {
+    let mut sys = System::new();
+    sys.add_directive("#ignore : [ ] X").unwrap();
+    sys.add_rule("A > B -> S").unwrap();
+    sys.set_axiom("A [ X ] B").unwrap();
+
+    sys.derive(1).unwrap();
+    let output = format!("{}", sys.state.display(&sys.interner));
+
     assert_eq!(
         output, "S [ X ] B",
-        "Topology takes precedence: A > B matches because [X] is skipped via topology, \
-         not because brackets are ignored. #ignore : [ ] is ineffective for brackets."
+        "#ignore [ ] X should allow A > B to match by skipping [, X, and ] linearly"
+    );
+}
+
+/// Verifies that `#ignore [ ]` disables topology for left context matching too.
+///
+/// With `A [ X ] B` and `#ignore [ ]`, left context scan from B sees:
+/// `]` (skip), `X` (not A, not ignored → mismatch). So `A < B` does NOT match.
+#[test]
+fn test_ignore_brackets_disables_topology_left_context() {
+    let mut sys = System::new();
+    sys.add_directive("#ignore : [ ]").unwrap();
+    sys.add_rule("A < B -> S").unwrap();
+    sys.set_axiom("A [ X ] B").unwrap();
+
+    sys.derive(1).unwrap();
+    let output = format!("{}", sys.state.display(&sys.interner));
+
+    assert_eq!(
+        output, "A [ X ] B",
+        "#ignore [ ] should disable topology for left context: A < B must not match because X is between them"
+    );
+}
+
+/// Verifies that without #ignore, topology correctly skips branches for left context.
+#[test]
+fn test_topology_skips_branches_left_context_without_ignore() {
+    let mut sys = System::new();
+    sys.add_rule("A < B -> S").unwrap();
+    sys.set_axiom("A [ X ] B").unwrap();
+
+    sys.derive(1).unwrap();
+    let output = format!("{}", sys.state.display(&sys.interner));
+
+    // Without #ignore, topology links are active: ] jumps to [, then [ is stepped over,
+    // revealing A as the left context of B.
+    assert_eq!(
+        output, "A [ X ] S",
+        "Without #ignore, topology should allow A < B to match by skipping [X] branch"
     );
 }
 

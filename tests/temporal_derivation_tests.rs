@@ -72,3 +72,77 @@ fn test_age_access_in_successor() {
     assert_eq!(sys.interner.resolve(v0.sym), Some("B"));
     assert_eq!(v0.params[0], 10.5); // Parameter should be the parent's age
 }
+
+#[test]
+fn test_advance_time_rejects_overflow_to_infinity() {
+    let mut sys = System::new();
+    sys.set_axiom("A").unwrap();
+
+    // Set current_time near f64::MAX
+    sys.state.current_time = f64::MAX / 2.0;
+
+    // A step that would overflow to infinity should be rejected
+    let result = sys.state.advance_time(f64::MAX);
+    assert!(
+        result.is_err(),
+        "advance_time should reject overflow to infinity"
+    );
+
+    // current_time must remain unchanged (finite)
+    assert!(sys.state.current_time.is_finite());
+}
+
+#[test]
+fn test_derive_rejects_infinite_current_time() {
+    let mut sys = System::new();
+    sys.add_rule("A -> A").unwrap();
+    sys.set_axiom("A").unwrap();
+
+    // Directly corrupt current_time (bypassing advance_time guard)
+    sys.state.current_time = f64::INFINITY;
+
+    let result = sys.derive(1);
+    assert!(
+        result.is_err(),
+        "derive should reject non-finite current_time"
+    );
+}
+
+#[test]
+fn test_derive_rejects_nan_current_time() {
+    let mut sys = System::new();
+    sys.add_rule("A -> A").unwrap();
+    sys.set_axiom("A").unwrap();
+
+    sys.state.current_time = f64::NAN;
+
+    let result = sys.derive(1);
+    assert!(result.is_err(), "derive should reject NaN current_time");
+}
+
+#[test]
+fn test_advance_time_rejects_negative_step() {
+    let mut sys = System::new();
+    sys.set_axiom("A").unwrap();
+
+    let result = sys.state.advance_time(-1.0);
+    assert!(result.is_err(), "advance_time should reject negative dt");
+}
+
+#[test]
+fn test_advance_time_rejects_nan_step() {
+    let mut sys = System::new();
+    sys.set_axiom("A").unwrap();
+
+    let result = sys.state.advance_time(f64::NAN);
+    assert!(result.is_err(), "advance_time should reject NaN dt");
+}
+
+#[test]
+fn test_advance_time_rejects_infinite_step() {
+    let mut sys = System::new();
+    sys.set_axiom("A").unwrap();
+
+    let result = sys.state.advance_time(f64::INFINITY);
+    assert!(result.is_err(), "advance_time should reject infinite dt");
+}
