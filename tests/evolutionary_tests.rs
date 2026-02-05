@@ -1,5 +1,13 @@
-use symbios::System;
-use symbios::system::{CrossoverConfig, MutationConfig, StructuralMutationConfig};
+use symbios::{
+    System,
+    system::{
+        crossover::{AdvancedCrossoverConfig, CrossoverConfig, CrossoverStrategy},
+        mutate::{
+            LiteralPromotionConfig, MutationConfig, OperatorFlipConfig, RuleDuplicationConfig,
+            StructuralMutationConfig, TopologicalMutationConfig,
+        },
+    },
+};
 
 #[test]
 fn test_reset_restores_initial_state() {
@@ -1240,11 +1248,6 @@ fn test_derive_succeeds_after_heavy_mutation() {
 // ============================================================================
 // Tests for New Evolutionary Features (Issues #50-57)
 // ============================================================================
-
-use symbios::system::{
-    AdvancedCrossoverConfig, CrossoverStrategy, LiteralPromotionConfig, OperatorFlipConfig,
-    RuleDuplicationConfig, TopologicalMutationConfig,
-};
 
 /// Test Gaussian constant jitter mutation (Issue #53).
 #[test]

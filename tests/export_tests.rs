@@ -1,4 +1,4 @@
-use symbios::{SymbiosState, SymbolTable, System};
+use symbios::{SymbiosState, SymbolTable, System, system::mutate::StructuralMutationConfig};
 
 #[test]
 fn test_l_system_string_export() {
@@ -89,8 +89,6 @@ fn test_export_stochastic_rule() {
 
 #[test]
 fn test_export_after_mutation() {
-    use symbios::system::StructuralMutationConfig;
-
     let mut sys = System::new();
     sys.add_rule("A -> A B").unwrap();
     sys.set_seed(12345);

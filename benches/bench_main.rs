@@ -1,8 +1,13 @@
 use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use symbios::System;
-use symbios::system::{CrossoverConfig, MutationConfig, StructuralMutationConfig};
+use symbios::{
+    System,
+    system::{
+        crossover::CrossoverConfig,
+        mutate::{MutationConfig, StructuralMutationConfig},
+    },
+};
 
 fn bench_exponential_growth(c: &mut Criterion) {
     let mut group = c.benchmark_group("Derivation");
@@ -82,6 +87,8 @@ fn bench_mutation(c: &mut Criterion) {
                     rule_probability_strength: 0.2,
                     constant_rate: 0.5,
                     constant_strength: 0.3,
+                    gaussian_jitter_scale: 0.4,
+                    gaussian_jitter_rate: 0.5,
                 };
                 sys.mutate(black_box(&config));
             },

@@ -1,4 +1,5 @@
 use symbios::System;
+use symbios::system::crossover::CrossoverConfig;
 use symbios::system::matching::{self, MatchScratch};
 use symbios::vm::{MathOp, Op, VirtualMachine};
 
@@ -84,8 +85,6 @@ fn test_advance_time_overflow_prevention() {
 /// This verifies that rule inheritance and symbol mapping work correctly.
 #[test]
 fn test_crossover_functional_offspring() {
-    use symbios::system::CrossoverConfig;
-
     // Parent A: Fibonacci-like growth
     let mut parent_a = System::new();
     parent_a.add_rule("A -> A B").unwrap();
