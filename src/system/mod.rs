@@ -203,6 +203,12 @@ impl System {
             expected_arities.push(m.params.len());
             for param in &m.params {
                 if let ast::Expr::Variable(name) = param {
+                    if param_names.contains(name) {
+                        return Err(SystemError::CompileError(format!(
+                            "Shadowing or ambiguous parameter in left context: {}",
+                            name
+                        )));
+                    }
                     param_names.push(name.clone());
                 }
             }
@@ -212,6 +218,12 @@ impl System {
             expected_arities.push(m.params.len());
             for param in &m.params {
                 if let ast::Expr::Variable(name) = param {
+                    if param_names.contains(name) {
+                        return Err(SystemError::CompileError(format!(
+                            "Shadowing or ambiguous parameter in right context: {}",
+                            name
+                        )));
+                    }
                     param_names.push(name.clone());
                 }
             }

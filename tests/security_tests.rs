@@ -1,3 +1,4 @@
+use symbios::System;
 use symbios::parser::{ast::Expr, parse_expr, parse_module};
 use symbios::{SymbiosState, core::SymbiosError};
 
@@ -77,4 +78,18 @@ fn test_stack_depth_limit() {
         expr = Box::new(Expr::Add(expr, Box::new(Expr::Number(1.0))));
     }
     // recursive drop is safe at depth 100
+}
+
+#[test]
+fn test_context_param_shadowing_prevention() {
+    let mut sys = System::new();
+    // A(x) defines 'x'. B(x) attempts to redefine 'x'.
+    // If successful, C(x) would be ambiguous (is it A's x or B's x?).
+    // The system should now reject this rule.
+    let res = sys.add_rule("A(x) < B(x) -> C(x)");
+    assert!(res.is_err());
+
+    // Correct usage: unique names
+    let res_valid = sys.add_rule("A(x) < B(y) -> C(x + y)");
+    assert!(res_valid.is_ok());
 }

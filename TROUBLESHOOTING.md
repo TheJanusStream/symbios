@@ -253,7 +253,7 @@ VM error: Mathematical error (NaN/Inf)
 
 #### Division by Zero
 ```rust
-sys.add_rule("A(x) : x / 0 -> B")?;  // Generates NaN
+sys.add_rule("A(x) : x / 0 -> B")?;
 
 // ✅ Fix
 sys.add_rule("A(x) : x != 0 -> B(1/x)")?;
@@ -261,7 +261,7 @@ sys.add_rule("A(x) : x != 0 -> B(1/x)")?;
 
 #### Sqrt of Negative
 ```rust
-sys.add_rule("A(x) -> B(sqrt(x))")?;  // NaN if x < 0
+sys.add_rule("A(x) -> B(sqrt(x))")?;
 
 // ✅ Fix
 sys.add_rule("A(x) : x >= 0 -> B(sqrt(x))")?;
@@ -269,7 +269,7 @@ sys.add_rule("A(x) : x >= 0 -> B(sqrt(x))")?;
 
 #### Overflow
 ```rust
-sys.add_rule("A(x) -> B(x ^ 1000)")?;  // Inf for large x
+sys.add_rule("A(x) -> B(x ^ 1000)")?;
 
 // ✅ Fix
 sys.add_rule("A(x) : x < 10 -> B(x ^ 2)")?;
