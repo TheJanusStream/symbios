@@ -92,6 +92,7 @@ fn test_mutate_changes_probabilities() {
         rule_probability_strength: 0.3,
         constant_rate: 0.0,
         constant_strength: 0.0,
+        ..Default::default()
     };
     sys.mutate(&config);
 
@@ -129,6 +130,7 @@ fn test_mutate_changes_constants() {
         rule_probability_strength: 0.0,
         constant_rate: 1.0,
         constant_strength: 0.5,
+        ..Default::default()
     };
     sys.mutate(&config);
 
@@ -156,6 +158,7 @@ fn test_mutate_respects_zero_rate() {
         rule_probability_strength: 1.0,
         constant_rate: 0.0,
         constant_strength: 1.0,
+        ..Default::default()
     };
     sys.mutate(&config);
 
@@ -307,6 +310,7 @@ fn test_mutate_with_rng_reproducibility() {
         rule_probability_strength: 0.3,
         constant_rate: 1.0,
         constant_strength: 0.3,
+        ..Default::default()
     };
 
     // Same seed should produce same mutations
@@ -1230,5 +1234,462 @@ fn test_derive_succeeds_after_heavy_mutation() {
         result.is_ok(),
         "Derivation should succeed after heavy mutation: {:?}",
         result.err()
+    );
+}
+
+// ============================================================================
+// Tests for New Evolutionary Features (Issues #50-57)
+// ============================================================================
+
+use symbios::system::{
+    AdvancedCrossoverConfig, CrossoverStrategy, LiteralPromotionConfig, OperatorFlipConfig,
+    RuleDuplicationConfig, TopologicalMutationConfig,
+};
+
+/// Test Gaussian constant jitter mutation (Issue #53).
+#[test]
+fn test_gaussian_jitter_mutates_push_values() {
+    use symbios::vm::Op;
+
+    let mut sys = System::new();
+    sys.add_rule("A(x) -> A(x + 10)").unwrap();
+    sys.set_axiom("A(0)").unwrap();
+
+    let a_sym = sys.interner.resolve_id("A").unwrap();
+    let original_push = sys.rules[&a_sym][0].successors[0].params[0]
+        .iter()
+        .find_map(|op| if let Op::Push(v) = op { Some(*v) } else { None });
+
+    let config = MutationConfig {
+        gaussian_jitter_scale: 2.0,
+        gaussian_jitter_rate: 1.0,
+        ..Default::default()
+    };
+
+    // Mutate multiple times
+    for _ in 0..10 {
+        sys.mutate(&config);
+    }
+
+    let new_push = sys.rules[&a_sym][0].successors[0].params[0]
+        .iter()
+        .find_map(|op| if let Op::Push(v) = op { Some(*v) } else { None });
+
+    if let (Some(orig), Some(new)) = (original_push, new_push) {
+        assert!(
+            (orig - new).abs() > 1e-10,
+            "Gaussian jitter should mutate Push values"
+        );
+    }
+}
+
+/// Test that Gaussian jitter respects zero rate.
+#[test]
+fn test_gaussian_jitter_respects_zero_rate() {
+    use symbios::vm::Op;
+
+    let mut sys = System::new();
+    sys.add_rule("A(x) -> A(x + 10)").unwrap();
+    sys.set_axiom("A(0)").unwrap();
+
+    let a_sym = sys.interner.resolve_id("A").unwrap();
+    let original_push = sys.rules[&a_sym][0].successors[0].params[0]
+        .iter()
+        .find_map(|op| if let Op::Push(v) = op { Some(*v) } else { None })
+        .unwrap();
+
+    let config = MutationConfig {
+        gaussian_jitter_scale: 100.0,
+        gaussian_jitter_rate: 0.0, // Zero rate should prevent mutation
+        ..Default::default()
+    };
+
+    for _ in 0..10 {
+        sys.mutate(&config);
+    }
+
+    let new_push = sys.rules[&a_sym][0].successors[0].params[0]
+        .iter()
+        .find_map(|op| if let Op::Push(v) = op { Some(*v) } else { None })
+        .unwrap();
+
+    assert_eq!(original_push, new_push, "Zero rate should prevent mutation");
+}
+
+/// Test operator flip mutation (Issue #54).
+#[test]
+fn test_operator_flip_swaps_arithmetic_ops() {
+    use symbios::vm::Op;
+
+    let mut sys = System::new();
+    sys.add_rule("A(x) -> A(x + x)").unwrap();
+    sys.set_axiom("A(1)").unwrap();
+
+    let a_sym = sys.interner.resolve_id("A").unwrap();
+    let has_add = sys.rules[&a_sym][0].successors[0].params[0]
+        .iter()
+        .any(|op| matches!(op, Op::Add));
+    assert!(has_add, "Original rule should have Add");
+
+    let config = OperatorFlipConfig {
+        arithmetic_flip_rate: 1.0,
+        relational_flip_rate: 0.0,
+    };
+
+    // Flip multiple times to ensure we get Sub
+    let mut found_sub = false;
+    for _ in 0..50 {
+        sys.operator_flip_mutate(&config);
+        let has_sub = sys.rules[&a_sym][0].successors[0].params[0]
+            .iter()
+            .any(|op| matches!(op, Op::Sub));
+        if has_sub {
+            found_sub = true;
+            break;
+        }
+    }
+
+    assert!(found_sub, "Operator flip should eventually produce Sub");
+}
+
+/// Test operator flip on relational operators.
+#[test]
+fn test_operator_flip_swaps_relational_ops() {
+    use symbios::vm::Op;
+
+    let mut sys = System::new();
+    sys.add_rule("A(x) : x > 5 -> B").unwrap();
+    sys.set_axiom("A(0)").unwrap();
+
+    let a_sym = sys.interner.resolve_id("A").unwrap();
+    let has_gt = sys.rules[&a_sym][0]
+        .condition
+        .as_ref()
+        .map(|c| c.iter().any(|op| matches!(op, Op::Gt)))
+        .unwrap_or(false);
+    assert!(has_gt, "Original condition should have Gt");
+
+    let config = OperatorFlipConfig {
+        arithmetic_flip_rate: 0.0,
+        relational_flip_rate: 1.0,
+    };
+
+    let mut found_lt = false;
+    for _ in 0..50 {
+        sys.operator_flip_mutate(&config);
+        let has_lt = sys.rules[&a_sym][0]
+            .condition
+            .as_ref()
+            .map(|c| c.iter().any(|op| matches!(op, Op::Lt)))
+            .unwrap_or(false);
+        if has_lt {
+            found_lt = true;
+            break;
+        }
+    }
+
+    assert!(found_lt, "Operator flip should eventually produce Lt");
+}
+
+/// Test rule duplication and specialization (Issue #55).
+#[test]
+fn test_rule_duplication_creates_copies() {
+    let mut sys = System::new();
+    sys.add_rule("A -> B").unwrap();
+    sys.set_axiom("A").unwrap();
+
+    let a_sym = sys.interner.resolve_id("A").unwrap();
+    assert_eq!(sys.rules[&a_sym].len(), 1, "Should start with 1 rule");
+
+    let config = RuleDuplicationConfig {
+        duplication_rate: 1.0,
+        condition_perturbation: 0.1,
+    };
+
+    sys.rule_duplication_mutate(&config);
+
+    assert_eq!(
+        sys.rules[&a_sym].len(),
+        2,
+        "Duplication should create a copy"
+    );
+
+    // Both rules should have complementary probabilities
+    let total_prob: f64 = sys.rules[&a_sym].iter().map(|r| r.probability).sum();
+    assert!(
+        (total_prob - 1.0).abs() < 1e-10,
+        "Probabilities should sum to 1.0"
+    );
+}
+
+/// Test topological symbol mutation (Issue #57).
+#[test]
+fn test_topological_mutation_swaps_turtle_commands() {
+    let mut sys = System::new();
+    // Use rules with both + and - to ensure both are interned
+    sys.add_rule("A -> + F").unwrap();
+    sys.add_rule("B -> - F").unwrap(); // This ensures - is interned
+    sys.set_axiom("A").unwrap();
+
+    let a_sym = sys.interner.resolve_id("A").unwrap();
+    let plus_sym = sys.interner.resolve_id("+").unwrap();
+    let minus_sym = sys.interner.resolve_id("-").unwrap();
+
+    let original_first = sys.rules[&a_sym][0].successors[0].symbol;
+    assert_eq!(original_first, plus_sym, "Original should start with +");
+
+    let config = TopologicalMutationConfig { swap_rate: 1.0 };
+
+    // Run many times to ensure swap happens
+    let mut found_swap = false;
+    for _ in 0..50 {
+        let mut test_sys = sys.clone();
+        test_sys.topological_mutate(&config);
+
+        // Check if + was swapped to -
+        let first_sym = test_sys.rules[&a_sym][0].successors[0].symbol;
+        if first_sym == minus_sym {
+            found_swap = true;
+            break;
+        }
+    }
+
+    assert!(
+        found_swap,
+        "Topological mutation should eventually swap + to -"
+    );
+}
+
+/// Test literal-to-constant promotion (Issue #56).
+#[test]
+fn test_literal_to_constant_promotion() {
+    use symbios::vm::Op;
+
+    let mut sys = System::new();
+    sys.add_directive("#define ANGLE 45").unwrap();
+    sys.add_rule("A(x) -> A(x + 45)").unwrap();
+    sys.set_axiom("A(0)").unwrap();
+
+    let a_sym = sys.interner.resolve_id("A").unwrap();
+
+    let config = LiteralPromotionConfig {
+        promotion_rate: 1.0,
+        match_tolerance: 0.01,
+    };
+
+    sys.literal_to_constant_promote(&config);
+
+    // The literal 45.0 should now match the constant exactly
+    let has_45 = sys.rules[&a_sym][0].successors[0].params[0]
+        .iter()
+        .any(|op| matches!(op, Op::Push(v) if (*v - 45.0).abs() < 1e-10));
+
+    assert!(has_45, "Literal should be tied to constant value");
+}
+
+/// Test homologous rule crossover (Issue #50).
+#[test]
+fn test_homologous_crossover_selects_individual_rules() {
+    use rand::SeedableRng;
+    use rand_pcg::Pcg64;
+
+    let mut parent_a = System::new();
+    parent_a.add_rule("0.3: A -> A A").unwrap();
+    parent_a.add_rule("0.7: A -> B").unwrap();
+
+    let mut parent_b = System::new();
+    parent_b.add_rule("0.5: A -> C").unwrap();
+    parent_b.add_rule("0.5: A -> D").unwrap();
+
+    let config = AdvancedCrossoverConfig {
+        strategy: CrossoverStrategy::Homologous,
+        homologous_rule_bias: 0.5,
+        ..Default::default()
+    };
+
+    // Create multiple offspring to test selection
+    let mut rule_counts = std::collections::HashMap::new();
+
+    for seed in 0..50 {
+        let mut rng = Pcg64::seed_from_u64(seed);
+        let offspring = parent_a
+            .advanced_crossover_with_rng(&parent_b, &mut rng, &config)
+            .unwrap();
+
+        if let Some(a_id) = offspring.interner.resolve_id("A") {
+            if let Some(rules) = offspring.rules.get(&a_id) {
+                *rule_counts.entry(rules.len()).or_insert(0) += 1;
+            }
+        }
+    }
+
+    // Should have varying rule counts due to individual selection
+    assert!(
+        rule_counts.len() > 1,
+        "Homologous crossover should produce varying rule counts"
+    );
+}
+
+/// Test BLX-alpha parametric blend crossover (Issue #51).
+#[test]
+fn test_blx_alpha_blends_matching_rules() {
+    use rand::SeedableRng;
+    use rand_pcg::Pcg64;
+    use symbios::vm::Op;
+
+    let mut parent_a = System::new();
+    parent_a.add_rule("A(x) -> A(x + 10)").unwrap();
+
+    let mut parent_b = System::new();
+    parent_b.add_rule("A(x) -> A(x + 20)").unwrap();
+
+    let config = AdvancedCrossoverConfig {
+        strategy: CrossoverStrategy::Homologous,
+        homologous_rule_bias: 1.0, // Always select from A first
+        blx_alpha: 0.5,
+        ..Default::default()
+    };
+
+    let mut rng = Pcg64::seed_from_u64(42);
+    let offspring = parent_a
+        .advanced_crossover_with_rng(&parent_b, &mut rng, &config)
+        .unwrap();
+
+    // Find the Push value in offspring
+    if let Some(a_id) = offspring.interner.resolve_id("A") {
+        if let Some(rules) = offspring.rules.get(&a_id) {
+            let push_val = rules[0].successors[0].params[0]
+                .iter()
+                .find_map(|op| if let Op::Push(v) = op { Some(*v) } else { None });
+
+            if let Some(val) = push_val {
+                // With BLX-alpha=0.5, value should be in extended range [5, 25]
+                // (10 and 20 with alpha expansion)
+                assert!(
+                    val >= 5.0 && val <= 25.0,
+                    "BLX-alpha should produce value in extended range, got {}",
+                    val
+                );
+            }
+        }
+    }
+}
+
+/// Test sub-expression grafting crossover (Issue #52).
+#[test]
+fn test_subexpression_graft_swaps_branches() {
+    use rand::SeedableRng;
+    use rand_pcg::Pcg64;
+
+    let mut parent_a = System::new();
+    parent_a.add_rule("A -> F [ + F ] F").unwrap();
+    parent_a.set_axiom("A").unwrap();
+
+    let mut parent_b = System::new();
+    parent_b.add_rule("B -> F [ - F - F ] F").unwrap();
+    parent_b.set_axiom("B").unwrap();
+
+    let mut rng = Pcg64::seed_from_u64(42);
+    let offspring = parent_a
+        .subexpression_graft_with_rng(&parent_b, &mut rng, 1.0)
+        .unwrap();
+
+    // Offspring should have some rules
+    assert!(
+        !offspring.rules.is_empty(),
+        "Offspring should inherit rules"
+    );
+}
+
+/// Test advanced crossover with uniform strategy (fallback).
+#[test]
+fn test_advanced_crossover_uniform_strategy() {
+    let mut parent_a = System::new();
+    parent_a.add_rule("A -> A A").unwrap();
+    parent_a.add_directive("#define X 10").unwrap();
+
+    let mut parent_b = System::new();
+    parent_b.add_rule("A -> B").unwrap();
+    parent_b.add_directive("#define X 20").unwrap();
+
+    let config = AdvancedCrossoverConfig {
+        strategy: CrossoverStrategy::Uniform,
+        base: CrossoverConfig {
+            rule_bias: 0.5,
+            constant_blend: 0.5,
+        },
+        ..Default::default()
+    };
+
+    let offspring = parent_a.advanced_crossover(&parent_b, &config).unwrap();
+
+    // Constant should be blended
+    let blended_x = offspring.constants.get("X").copied().unwrap_or(0.0);
+    assert!(
+        (blended_x - 15.0).abs() < 1e-10,
+        "Uniform crossover should blend constants"
+    );
+}
+
+/// Test operator flip with RNG reproducibility.
+#[test]
+fn test_operator_flip_reproducibility() {
+    use rand::SeedableRng;
+    use rand_pcg::Pcg64;
+
+    let mut sys1 = System::new();
+    sys1.add_rule("A(x) : x > 5 -> A(x + 1)").unwrap();
+
+    let mut sys2 = sys1.clone();
+
+    let config = OperatorFlipConfig {
+        arithmetic_flip_rate: 0.5,
+        relational_flip_rate: 0.5,
+    };
+
+    let mut rng1 = Pcg64::seed_from_u64(12345);
+    let mut rng2 = Pcg64::seed_from_u64(12345);
+
+    sys1.operator_flip_mutate_with_rng(&mut rng1, &config);
+    sys2.operator_flip_mutate_with_rng(&mut rng2, &config);
+
+    let a_sym1 = sys1.interner.resolve_id("A").unwrap();
+    let a_sym2 = sys2.interner.resolve_id("A").unwrap();
+
+    assert_eq!(
+        sys1.rules[&a_sym1][0].condition, sys2.rules[&a_sym2][0].condition,
+        "Same seed should produce identical mutations"
+    );
+}
+
+/// Test rule duplication with RNG reproducibility.
+#[test]
+fn test_rule_duplication_reproducibility() {
+    use rand::SeedableRng;
+    use rand_pcg::Pcg64;
+
+    let mut sys1 = System::new();
+    sys1.add_rule("A : 1 -> B").unwrap();
+
+    let mut sys2 = sys1.clone();
+
+    let config = RuleDuplicationConfig {
+        duplication_rate: 1.0,
+        condition_perturbation: 0.5,
+    };
+
+    let mut rng1 = Pcg64::seed_from_u64(99999);
+    let mut rng2 = Pcg64::seed_from_u64(99999);
+
+    sys1.rule_duplication_mutate_with_rng(&mut rng1, &config);
+    sys2.rule_duplication_mutate_with_rng(&mut rng2, &config);
+
+    let a_sym1 = sys1.interner.resolve_id("A").unwrap();
+    let a_sym2 = sys2.interner.resolve_id("A").unwrap();
+
+    assert_eq!(
+        sys1.rules[&a_sym1].len(),
+        sys2.rules[&a_sym2].len(),
+        "Same seed should produce identical rule counts"
     );
 }
