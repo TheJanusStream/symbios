@@ -220,6 +220,7 @@ impl System {
                         })
                         .collect(),
                     expected_arities: rule.expected_arities.clone(),
+                    param_names: rule.param_names.clone(),
                 };
                 remapped_rules.push(remapped);
             }
@@ -266,6 +267,10 @@ impl System {
         }
 
         offspring.ignored_symbols = new_ignored;
+
+        // Inherit axiom and preamble from parent A for source round-tripping
+        offspring.axiom_source = self.axiom_source.clone();
+        offspring.preamble = self.preamble.clone();
 
         // Merge symbol_arities from both parents with rule-consistent inheritance.
         // For symbols with rules, use arity from the parent whose rules were selected.
@@ -469,6 +474,10 @@ impl System {
         }
         offspring.ignored_symbols = new_ignored;
 
+        // Inherit axiom and preamble from parent A for source round-tripping
+        offspring.axiom_source = self.axiom_source.clone();
+        offspring.preamble = self.preamble.clone();
+
         // Merge symbol arities
         for (&old_id, &arity) in &self.symbol_arities {
             if let Some(&new_id) = symbol_map_self.get(&old_id) {
@@ -510,6 +519,7 @@ impl System {
                 })
                 .collect(),
             expected_arities: rule.expected_arities.clone(),
+            param_names: rule.param_names.clone(),
         }
     }
 

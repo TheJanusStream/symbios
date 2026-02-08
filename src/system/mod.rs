@@ -3,6 +3,7 @@ pub mod derivation;
 pub mod export;
 pub mod matching;
 pub mod mutate;
+pub mod source;
 
 use crate::core::SymbiosState;
 use crate::core::interner::SymbolTable;
@@ -74,6 +75,9 @@ pub struct RuntimeRule {
     pub successors: Vec<RuntimeModule>,
     /// Expected parameter counts for validation.
     pub expected_arities: Vec<usize>,
+    /// Original parameter names from source for high-fidelity export.
+    /// Order: predecessor params, then left context params, then right context params.
+    pub param_names: Vec<String>,
 }
 
 /// The primary interface for defining and simulating an L-System.
@@ -114,6 +118,10 @@ pub struct System {
     /// Known arities for symbols (symbol ID -> expected parameter count).
     /// Used by structural mutation to initialize inserted modules correctly.
     symbol_arities: HashMap<u16, usize>,
+    /// Non-rule preamble lines (comments, `#ignore` directives) preserved for source reconstruction.
+    pub preamble: Vec<String>,
+    /// Original axiom source text for lossless round-tripping.
+    pub axiom_source: Option<String>,
 }
 
 impl Default for System {
@@ -142,7 +150,48 @@ impl System {
             derive_candidate_indices: Vec::new(),
             initial_state: None,
             symbol_arities: HashMap::new(),
+            preamble: Vec::new(),
+            axiom_source: None,
         }
+    }
+
+    /// Parses a complete L-system source file into a System.
+    ///
+    /// Handles comments, `#define`, `#ignore`, `omega:` axiom, and production rules.
+    /// Preserves preamble lines and axiom source for lossless round-tripping via `to_source()`.
+    ///
+    /// # Example
+    /// ```
+    /// use symbios::System;
+    ///
+    /// let source = "#define n 5\nomega: A(n)\nA(x) : x > 0 -> A(x - 1) B";
+    /// let sys = System::from_source(source).unwrap();
+    /// assert_eq!(sys.constants["n"], 5.0);
+    /// ```
+    pub fn from_source(source: &str) -> Result<Self, SystemError> {
+        let mut system = Self::new();
+
+        for line in source.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with("//") {
+                system.preamble.push(line.to_string());
+                continue;
+            }
+            if let Some(axiom) = trimmed.strip_prefix("omega:") {
+                let axiom = axiom.trim();
+                system.axiom_source = Some(format!("omega: {}", axiom));
+                system.set_axiom(axiom)?;
+            } else if trimmed.starts_with('#') {
+                system.preamble.push(line.to_string());
+                system.add_directive(trimmed)?;
+            } else if trimmed.contains("->") {
+                system.add_rule(trimmed)?;
+            } else {
+                system.preamble.push(line.to_string());
+            }
+        }
+
+        Ok(system)
     }
 
     /// Sets the random seed for stochastic rule selection.
@@ -229,7 +278,7 @@ impl System {
             }
         }
 
-        let mut compiler = Compiler::new(param_names, &self.constants);
+        let mut compiler = Compiler::new(param_names.clone(), &self.constants);
 
         let pred_sym = self
             .interner
@@ -287,6 +336,7 @@ impl System {
             condition: condition_code,
             successors: runtime_successors.clone(),
             expected_arities,
+            param_names,
         };
 
         // Track predecessor arity
@@ -406,6 +456,8 @@ impl Clone for System {
             derive_candidate_indices: Vec::new(),
             initial_state: self.initial_state.clone(),
             symbol_arities: self.symbol_arities.clone(),
+            preamble: self.preamble.clone(),
+            axiom_source: self.axiom_source.clone(),
         }
     }
 }

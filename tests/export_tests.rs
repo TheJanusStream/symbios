@@ -51,8 +51,8 @@ fn test_export_rules_parametric() {
 
     let exported = sys.export_rules_for("A");
     assert_eq!(exported.len(), 1);
-    // Uses synthetic param names (p0 instead of x)
-    assert_eq!(exported[0], "A(p0) : p0 > 10 -> B(p0 + 1)");
+    // Preserves original param names from source
+    assert_eq!(exported[0], "A(x) : x > 10 -> B(x + 1)");
 }
 
 #[test]

@@ -36,7 +36,7 @@ impl System {
 
         for rules in self.rules.values() {
             for rule in rules {
-                let config = ExportConfig::synthetic(rule);
+                let config = ExportConfig::from_rule(rule);
                 if let Ok(source) = export_rule_to_string(rule, &self.interner, &config) {
                     let pred_name = self
                         .interner
@@ -71,7 +71,7 @@ impl System {
 
         let mut results = Vec::new();
         for rule in rules {
-            let config = ExportConfig::synthetic(rule);
+            let config = ExportConfig::from_rule(rule);
             if let Ok(source) = export_rule_to_string(rule, &self.interner, &config) {
                 results.push(source);
             }
@@ -103,8 +103,60 @@ impl System {
             SystemError::CompileError(format!("Rule index {} out of bounds", index))
         })?;
 
-        let config = ExportConfig::synthetic(rule);
+        let config = ExportConfig::from_rule(rule);
         export_rule_to_string(rule, &self.interner, &config).map_err(SystemError::CompileError)
+    }
+
+    /// Reconstructs a complete L-system source file from the current state.
+    ///
+    /// Output order: preamble (comments, `#ignore`) → `#define` lines → `omega:` axiom → rules.
+    /// Uses stored parameter names for high-fidelity round-tripping.
+    ///
+    /// # Example
+    /// ```
+    /// use symbios::System;
+    ///
+    /// let source = "// A simple system\n#define n 5\nomega: A(n)\nA(x) : x > 0 -> A(x - 1) B";
+    /// let sys = System::from_source(source).unwrap();
+    /// let output = sys.to_source();
+    /// assert!(output.contains("// A simple system"));
+    /// assert!(output.contains("#define n 5"));
+    /// assert!(output.contains("omega:"));
+    /// ```
+    pub fn to_source(&self) -> String {
+        let mut result = String::new();
+
+        // Emit preamble lines (comments, #ignore — but NOT #define, which we regenerate)
+        for line in &self.preamble {
+            let trimmed = line.trim();
+            if trimmed.starts_with("#define") {
+                continue;
+            }
+            result.push_str(line);
+            result.push('\n');
+        }
+
+        // Emit #define lines from constants (sorted for determinism)
+        let mut constants: Vec<_> = self.constants.iter().collect();
+        constants.sort_by_key(|(k, _)| *k);
+        for (name, value) in constants {
+            result.push_str(&format!("#define {} {}\n", name, value));
+        }
+
+        // Emit axiom line
+        if let Some(ref axiom) = self.axiom_source {
+            result.push_str(axiom);
+            result.push('\n');
+        }
+
+        // Emit rules with preserved parameter names
+        let exported = self.export_rules();
+        for (_, rule_source) in exported {
+            result.push_str(&rule_source);
+            result.push('\n');
+        }
+
+        result.trim_end().to_string()
     }
 
     /// Exports a rule with custom parameter names.
@@ -182,6 +234,39 @@ impl ExportConfig {
             for j in 0..arity {
                 right_context_params.push(format!("r{}_{}", i, j));
             }
+        }
+
+        Self {
+            predecessor_params,
+            left_context_params,
+            right_context_params,
+        }
+    }
+
+    /// Creates config from stored parameter names in the rule.
+    /// Falls back to synthetic names if no param names are stored.
+    pub fn from_rule(rule: &RuntimeRule) -> Self {
+        if rule.param_names.is_empty() {
+            return Self::synthetic(rule);
+        }
+
+        let pred_arity = rule.expected_arities.first().copied().unwrap_or(0);
+        let predecessor_params: Vec<String> = rule.param_names[..pred_arity].to_vec();
+
+        let mut offset = pred_arity;
+        let mut left_context_params = Vec::new();
+        for &arity in rule.expected_arities[1..1 + rule.left_context.len()].iter() {
+            let end = (offset + arity).min(rule.param_names.len());
+            left_context_params.extend_from_slice(&rule.param_names[offset..end]);
+            offset = end;
+        }
+
+        let mut right_context_params = Vec::new();
+        let right_start = 1 + rule.left_context.len();
+        for &arity in rule.expected_arities[right_start..].iter() {
+            let end = (offset + arity).min(rule.param_names.len());
+            right_context_params.extend_from_slice(&rule.param_names[offset..end]);
+            offset = end;
         }
 
         Self {
@@ -378,6 +463,7 @@ mod tests {
                 },
             ],
             expected_arities: vec![0],
+            param_names: vec![],
         };
 
         let config = ExportConfig::default();
@@ -403,6 +489,7 @@ mod tests {
                 params: vec![vec![Op::LoadParam(0), Op::Push(1.0), Op::Add]],
             }],
             expected_arities: vec![1],
+            param_names: vec!["x".into()],
         };
 
         let config = ExportConfig {
@@ -433,6 +520,7 @@ mod tests {
                 params: vec![],
             }],
             expected_arities: vec![0, 0, 0],
+            param_names: vec![],
         };
 
         let config = ExportConfig::default();
@@ -457,6 +545,7 @@ mod tests {
                 params: vec![],
             }],
             expected_arities: vec![0],
+            param_names: vec![],
         };
 
         let config = ExportConfig::default();
@@ -474,6 +563,7 @@ mod tests {
             condition: None,
             successors: vec![],
             expected_arities: vec![2, 1, 3], // pred has 2 params, left has 1, right has 3
+            param_names: vec![],
         };
 
         let config = ExportConfig::synthetic(&rule);

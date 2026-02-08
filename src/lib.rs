@@ -35,3 +35,4 @@ pub mod vm;
 pub use crate::core::{SymbiosState, interner::SymbolTable};
 pub use crate::system::System;
 pub use crate::system::export::{ExportConfig, export_rule, export_rule_to_string};
+pub use crate::system::source::SourceGenotype;
