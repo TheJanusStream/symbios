@@ -96,9 +96,12 @@ impl System {
                         let mut r = self.rng.random_range(0.0..safe_total);
                         let mut winner = None;
                         let mut winner_idx = None;
-                        for &rule_idx in &self.derive_candidate_indices {
+                        let last_candidate = self.derive_candidate_indices.len() - 1;
+                        for (i, &rule_idx) in self.derive_candidate_indices.iter().enumerate() {
                             if let Some(rule) = bucket.and_then(|b| b.get(rule_idx)) {
-                                if r < rule.probability {
+                                // Last candidate always wins to absorb any
+                                // floating-point residual, eliminating bias.
+                                if r < rule.probability || i == last_candidate {
                                     winner = Some(rule);
                                     winner_idx = Some(rule_idx);
                                     break;
@@ -106,15 +109,7 @@ impl System {
                                 r -= rule.probability;
                             }
                         }
-                        if winner.is_none() {
-                            let fallback_idx = self.derive_candidate_indices.last().copied();
-                            (
-                                bucket.and_then(|b| fallback_idx.and_then(|i| b.get(i))),
-                                fallback_idx,
-                            )
-                        } else {
-                            (winner, winner_idx)
-                        }
+                        (winner, winner_idx)
                     };
 
                 // Check if we can reuse scratch indices (selected rule was last matched)

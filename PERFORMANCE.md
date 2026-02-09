@@ -87,22 +87,24 @@ Depth: 1 step
 
 **Per-Module Overhead:**
 ```rust
-// ModuleData size: 16 bytes (packed)
+// ModuleData size: 24 bytes (with alignment padding for f64)
+// Enforced by compile-time assertion in src/core/mod.rs.
 struct ModuleData {
     symbol: u16,        // 2 bytes
-    birth_time: f64,    // 8 bytes
+    birth_time: f64,    // 8 bytes (requires 8-byte alignment)
     param_start: u32,   // 4 bytes
     param_len: u16,     // 2 bytes
     topology_link: u32, // 4 bytes
 }
+// Raw sum: 20 bytes. Struct alignment (8) pads to 24 bytes.
 ```
 
 **Parameters:** 8 bytes per parameter (f64)
 
 **Example:** Module `A(1.0, 2.0, 3.0)` costs:
-- ModuleData: 16 bytes
+- ModuleData: 24 bytes
 - Parameters: 3 × 8 = 24 bytes
-- **Total: 40 bytes**
+- **Total: 48 bytes**
 
 Compare to naive approach:
 ```rust

@@ -33,6 +33,9 @@ struct ModuleData {
     topology_link: u32,
 }
 
+// Compile-time size assertion: keep PERFORMANCE.md in sync.
+const _: () = assert!(std::mem::size_of::<ModuleData>() == 24);
+
 /// Represents the current state of the L-System simulation.
 ///
 /// It stores the linear sequence of modules using a Structure-of-Arrays (SoA) layout

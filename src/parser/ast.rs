@@ -20,6 +20,53 @@ pub enum Expr {
     Or(Box<Expr>, Box<Expr>),
 }
 
+/// Iterative Drop to prevent stack overflow on deeply nested ASTs
+/// (e.g., left-associative chains like `1+1+1+...+1` with 10,000+ terms).
+impl Drop for Expr {
+    fn drop(&mut self) {
+        let mut stack = Vec::new();
+        self.take_children(&mut stack);
+        while let Some(mut expr) = stack.pop() {
+            expr.take_children(&mut stack);
+        }
+    }
+}
+
+impl Expr {
+    /// Extracts owned children, replacing them with inert `Number(0.0)` leaves.
+    /// The caller is responsible for dropping the returned children.
+    fn take_children(&mut self, stack: &mut Vec<Expr>) {
+        let dummy = || Box::new(Expr::Number(0.0));
+        match self {
+            Expr::Not(inner) | Expr::Neg(inner) => {
+                stack.push(*std::mem::replace(inner, dummy()));
+            }
+            Expr::Pow(l, r)
+            | Expr::Add(l, r)
+            | Expr::Sub(l, r)
+            | Expr::Mul(l, r)
+            | Expr::Div(l, r)
+            | Expr::Gt(l, r)
+            | Expr::Lt(l, r)
+            | Expr::Ge(l, r)
+            | Expr::Le(l, r)
+            | Expr::Eq(l, r)
+            | Expr::Ne(l, r)
+            | Expr::And(l, r)
+            | Expr::Or(l, r) => {
+                stack.push(*std::mem::replace(l, dummy()));
+                stack.push(*std::mem::replace(r, dummy()));
+            }
+            Expr::Call(_, args) => {
+                for arg in args.drain(..) {
+                    stack.push(arg);
+                }
+            }
+            Expr::Number(_) | Expr::Variable(_) => {}
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub struct ModuleSym {
     pub symbol: String,
@@ -218,6 +265,22 @@ impl fmt::Display for ModuleSym {
 
 impl fmt::Display for Rule {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Determine if probability needs explicit output.
+        // Condition-as-probability sugar (e.g., `A : 0.5 -> B`) means
+        // the numeric condition already encodes the probability.
+        let is_sugar = if let Some(Expr::Number(n)) = &self.condition {
+            (n - self.probability).abs() < f64::EPSILON
+        } else {
+            false
+        };
+        let needs_probability = (self.probability - 1.0).abs() > f64::EPSILON && !is_sugar;
+
+        // Probability prefix (written before label/predecessor so the parser
+        // can consume it with the `float :` prefix grammar).
+        if needs_probability {
+            write!(f, "{} : ", self.probability)?;
+        }
+
         // Label (if present)
         if let Some(label) = &self.label {
             write!(f, "{}: ", label)?;
@@ -254,19 +317,6 @@ impl fmt::Display for Rule {
         write!(f, " ->")?;
         for succ in &self.successors {
             write!(f, " {}", succ)?;
-        }
-
-        // Probability (only if not 1.0 and not redundant with condition)
-        if (self.probability - 1.0).abs() > f64::EPSILON {
-            let is_redundant_sugar = if let Some(Expr::Number(n)) = &self.condition {
-                (n - self.probability).abs() < f64::EPSILON
-            } else {
-                false
-            };
-
-            if !is_redundant_sugar {
-                write!(f, " : {}", self.probability)?;
-            }
         }
 
         Ok(())
@@ -509,7 +559,7 @@ mod tests {
                 params: vec![],
             }],
         };
-        assert_eq!(rule.to_string(), "A -> B : 0.5");
+        assert_eq!(rule.to_string(), "0.5 : A -> B");
     }
 
     #[test]

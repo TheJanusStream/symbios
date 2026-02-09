@@ -325,8 +325,19 @@ impl System {
             });
         }
 
-        // Track symbol arity for structural mutation (before moving expected_arities)
+        // Track symbol arities for structural mutation (before moving expected_arities).
+        // Context symbol arities must be captured here so structural_mutate inserts
+        // modules with the correct parameter count.
         let pred_arity = expected_arities[0];
+        for (i, &sym_id) in left_ctx.iter().enumerate() {
+            let arity = expected_arities.get(1 + i).copied().unwrap_or(0);
+            self.symbol_arities.entry(sym_id).or_insert(arity);
+        }
+        let right_start = 1 + left_ctx.len();
+        for (i, &sym_id) in right_ctx.iter().enumerate() {
+            let arity = expected_arities.get(right_start + i).copied().unwrap_or(0);
+            self.symbol_arities.entry(sym_id).or_insert(arity);
+        }
 
         let new_rule = RuntimeRule {
             predecessor: pred_sym,

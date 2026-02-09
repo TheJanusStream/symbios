@@ -77,7 +77,18 @@ fn test_stack_depth_limit() {
     for _ in 0..100 {
         expr = Box::new(Expr::Add(expr, Box::new(Expr::Number(1.0))));
     }
-    // recursive drop is safe at depth 100
+    // iterative Drop handles this safely
+}
+
+#[test]
+fn test_deep_ast_iterative_drop() {
+    // Build a left-leaning chain of 20,000 additions.
+    // Without iterative Drop, this would stack-overflow on drop.
+    let mut expr = Box::new(Expr::Number(1.0));
+    for _ in 0..20_000 {
+        expr = Box::new(Expr::Add(expr, Box::new(Expr::Number(1.0))));
+    }
+    drop(expr); // must not stack-overflow
 }
 
 #[test]

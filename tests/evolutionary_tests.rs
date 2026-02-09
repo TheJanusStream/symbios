@@ -1696,3 +1696,42 @@ fn test_rule_duplication_reproducibility() {
         "Same seed should produce identical rule counts"
     );
 }
+
+#[test]
+fn test_structural_mutation_respects_context_arity() {
+    // Context-only symbol X(a) should be inserted with arity 1 by structural mutation,
+    // not arity 0 (which would produce junk DNA that breaks context matching).
+    let mut sys = System::new();
+    sys.add_rule("X(a) < A -> B").unwrap();
+    sys.add_rule("A -> A").unwrap();
+    sys.set_axiom("A").unwrap();
+
+    // Force heavy insertion so X is likely to be picked
+    let config = StructuralMutationConfig {
+        successor_rate: 1.0,
+        insert_rate: 1.0,
+        delete_rate: 0.0,
+        swap_rate: 0.0,
+        bytecode_rate: 0.0,
+        op_rate: 0.0,
+        push_perturbation: 0.0,
+    };
+
+    // Run many iterations to exercise insertion of the context symbol
+    for seed in 0..50 {
+        let mut s = sys.clone();
+        s.set_seed(seed);
+        s.structural_mutate(&config);
+
+        // Exported rules must re-parse successfully — if X were inserted with
+        // arity 0 when the context expects arity 1, the system would be broken.
+        let source = s.to_source();
+        let result = System::from_source(&source);
+        assert!(
+            result.is_ok(),
+            "Seed {}: structural mutation produced invalid source:\n{}",
+            seed,
+            source
+        );
+    }
+}

@@ -84,7 +84,7 @@ fn test_export_stochastic_rule() {
 
     let exported = sys.export_rules_for("A");
     assert_eq!(exported.len(), 1);
-    assert_eq!(exported[0], "A -> B : 0.5");
+    assert_eq!(exported[0], "0.5 : A -> B");
 }
 
 #[test]
@@ -162,4 +162,59 @@ fn test_round_trip_parse_export() {
     let state2 = format!("{}", sys2.state.display(&sys2.interner));
 
     assert_eq!(state1, state2);
+}
+
+#[test]
+fn test_round_trip_stochastic_rules() {
+    // Regression test: stochastic probabilities must survive export → re-import.
+    let mut sys = System::new();
+    sys.add_rule("0.3 : A -> B").unwrap();
+    sys.add_rule("0.7 : A -> C").unwrap();
+    sys.set_axiom("A A A A A A A A A A").unwrap();
+
+    // Export and re-import
+    let exported = sys.export_rules();
+    let mut sys2 = System::new();
+    for (_, rule_src) in &exported {
+        sys2.add_rule(rule_src).unwrap();
+    }
+    sys2.set_axiom("A A A A A A A A A A").unwrap();
+
+    // Both systems should produce identical output with same seed
+    sys.set_seed(123);
+    sys2.set_seed(123);
+    sys.derive(1).unwrap();
+    sys2.derive(1).unwrap();
+
+    let state1 = format!("{}", sys.state.display(&sys.interner));
+    let state2 = format!("{}", sys2.state.display(&sys2.interner));
+    assert_eq!(
+        state1, state2,
+        "Stochastic round-trip failed: probabilities were lost during export/import"
+    );
+}
+
+#[test]
+fn test_round_trip_stochastic_from_source() {
+    // End-to-end: from_source → to_source → from_source must preserve probabilities.
+    let source = "omega: A A A A A\n0.4 : A -> B\n0.6 : A -> C";
+    let sys1 = System::from_source(source).unwrap();
+    let exported = sys1.to_source();
+    let sys2 = System::from_source(&exported).unwrap();
+
+    // Verify probabilities survived by comparing derivation outputs
+    let mut s1 = sys1;
+    let mut s2 = sys2;
+    s1.set_seed(77);
+    s2.set_seed(77);
+    s1.derive(1).unwrap();
+    s2.derive(1).unwrap();
+
+    let out1 = format!("{}", s1.state.display(&s1.interner));
+    let out2 = format!("{}", s2.state.display(&s2.interner));
+    assert_eq!(
+        out1, out2,
+        "from_source round-trip lost stochastic probabilities.\nExported source:\n{}",
+        exported
+    );
 }

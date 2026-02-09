@@ -109,19 +109,65 @@ impl<'de> Deserialize<'de> for SymbolTable {
     where
         D: Deserializer<'de>,
     {
-        #[derive(Deserialize)]
-        struct Snapshot {
-            to_str: Vec<String>,
-            max_bytes: usize,
+        use serde::de::{self, MapAccess, Visitor};
+
+        // Stream-validate: deserialize fields individually so we can check
+        // max_bytes before allocating the full string table.
+        struct SymbolTableVisitor;
+
+        impl<'de> Visitor<'de> for SymbolTableVisitor {
+            type Value = SymbolTable;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a SymbolTable struct with to_str and max_bytes fields")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut to_str: Option<Vec<String>> = None;
+                let mut max_bytes: Option<usize> = None;
+
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "to_str" => to_str = Some(map.next_value()?),
+                        "max_bytes" => max_bytes = Some(map.next_value()?),
+                        _ => {
+                            let _ = map.next_value::<de::IgnoredAny>()?;
+                        }
+                    }
+                }
+
+                let strings = to_str.ok_or_else(|| de::Error::missing_field("to_str"))?;
+                let max = max_bytes.ok_or_else(|| de::Error::missing_field("max_bytes"))?;
+
+                // Validate entry count before interning (u16 ID space)
+                if strings.len() > u16::MAX as usize {
+                    return Err(de::Error::custom(format!(
+                        "Symbol table has {} entries, exceeds u16::MAX ({})",
+                        strings.len(),
+                        u16::MAX
+                    )));
+                }
+
+                // Validate total byte budget before interning
+                let total_bytes: usize = strings.iter().map(|s| s.len()).sum();
+                if total_bytes > max {
+                    return Err(de::Error::custom(format!(
+                        "Total string data ({} bytes) exceeds max_bytes ({})",
+                        total_bytes, max
+                    )));
+                }
+
+                let mut table = SymbolTable::with_capacity(max);
+                for s in strings {
+                    table.intern(&s).map_err(de::Error::custom)?;
+                }
+                Ok(table)
+            }
         }
 
-        let snapshot = Snapshot::deserialize(deserializer)?;
-        let mut table = SymbolTable::with_capacity(snapshot.max_bytes);
-
-        for s in snapshot.to_str {
-            table.intern(&s).map_err(serde::de::Error::custom)?;
-        }
-
-        Ok(table)
+        deserializer.deserialize_struct("SymbolTable", &["to_str", "max_bytes"], SymbolTableVisitor)
     }
 }

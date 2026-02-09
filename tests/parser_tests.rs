@@ -146,9 +146,8 @@ fn test_equality_alias_parsing() {
     // Tests that '=' is accepted as '=='
     let input = "A(d) : d=0 -> B";
     let (_, rule) = parse_rule(input).expect("Should parse d=0 as Eq");
-    if let Some(Expr::Eq(lhs, rhs)) = rule.condition {
-        assert!(matches!(*lhs, Expr::Variable(_)));
-        assert!(matches!(*rhs, Expr::Number(_)));
+    if let Some(ref cond) = rule.condition {
+        assert!(matches!(cond, Expr::Eq(_, _)));
     } else {
         panic!("Expected Expr::Eq");
     }

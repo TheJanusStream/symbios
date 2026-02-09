@@ -35,3 +35,24 @@ fn test_state_serde() {
         view.age
     );
 }
+
+#[test]
+fn test_interner_deser_rejects_oversized_payload() {
+    // Craft a JSON where total string bytes exceed max_bytes
+    let payload = r#"{"to_str":["AAAAAAAAAA","BBBBBBBBBB"],"max_bytes":5}"#;
+    let result: Result<SymbolTable, _> = serde_json::from_str(payload);
+    assert!(
+        result.is_err(),
+        "Deserialization should reject payload exceeding max_bytes"
+    );
+}
+
+#[test]
+fn test_interner_deser_valid_payload() {
+    // A well-formed payload within limits should succeed
+    let payload = r#"{"to_str":["A","B","C"],"max_bytes":1000}"#;
+    let table: SymbolTable = serde_json::from_str(payload).unwrap();
+    assert_eq!(table.len(), 3);
+    assert_eq!(table.resolve(0), Some("A"));
+    assert_eq!(table.resolve(2), Some("C"));
+}

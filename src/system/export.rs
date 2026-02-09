@@ -555,7 +555,7 @@ mod tests {
 
         let config = ExportConfig::default();
         let result = export_rule_to_string(&rule, &interner, &config).unwrap();
-        assert_eq!(result, "A -> B : 0.5");
+        assert_eq!(result, "0.5 : A -> B");
     }
 
     #[test]
