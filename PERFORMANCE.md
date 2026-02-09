@@ -9,6 +9,7 @@ This guide provides benchmarking results, optimization tips, and performance cha
 3. [Optimization Tips](#optimization-tips)
 4. [Profiling Guide](#profiling-guide)
 5. [Common Bottlenecks](#common-bottlenecks)
+6. [Genetic Operator Performance](#genetic-operator-performance)
 
 ---
 
@@ -48,13 +49,14 @@ Depth: 1 step
 
 **Performance:**
 - **Time:** ~169 µs (microseconds)
-- **Throughput:** ~17.7 million modules/second (3000 modules ÷ 169µs)
+- **Throughput:** ~17.7 million modules/second (3000 modules / 169µs)
 - **Per-module cost:** ~56 ns/module
 
 **What this tests:**
-- Context matching algorithm
-- Parameter access speed
-- Expression evaluation overhead
+- Context matching algorithm with topology skip-links
+- Parameter access speed (SoA layout)
+- VM expression evaluation overhead
+- Zero-allocation matching via `MatchScratch`
 
 ### Benchmark Summary
 
@@ -73,24 +75,25 @@ Depth: 1 step
 |-----------|----------------|------------------|-------|
 | Add rule | O(P) | O(P) | P = rule string length |
 | Set axiom | O(A) | O(A) | A = axiom string length |
-| Derive (N steps) | O(N × M × R) | O(M) | M = modules, R = rules |
+| Derive (N steps) | O(N × M × R) | O(M) | M = modules, R = rules per symbol |
 | Context matching | O(1) | O(1) | Via skip-links |
-| Parameter access | O(1) | O(1) | SoA layout |
+| Parameter access | O(1) | O(1) | SoA flat indexing |
 | Symbol comparison | O(1) | - | u16 equality |
 | Expression eval | O(I) | O(S) | I = instructions, S = stack depth |
 | Topology calculation | O(M) | O(D) | D = max nesting depth |
+| Stochastic selection | O(R) | O(1) | R = matching rules for module |
 
 ### Memory Layout Efficiency
 
 **Per-Module Overhead:**
 ```rust
-// ModuleData size: 16 bytes
+// ModuleData size: 16 bytes (packed)
 struct ModuleData {
     symbol: u16,        // 2 bytes
     birth_time: f64,    // 8 bytes
     param_start: u32,   // 4 bytes
     param_len: u16,     // 2 bytes
-    topology_link: u32, // 4 bytes (packed to 16 total)
+    topology_link: u32, // 4 bytes
 }
 ```
 
@@ -121,41 +124,24 @@ struct NaiveModule {
 
 ### 1. Pre-allocate State Capacity
 
-If you know your L-System will grow to ~N modules, pre-allocate:
+If you know your L-System will grow to ~N modules, set the capacity:
 
 ```rust
 let mut sys = System::new();
-sys.state.max_capacity = 1_000_000;  // Adjust as needed
-
-// Or manually reserve
-// (Currently not exposed, but could be added)
+sys.max_capacity = 1_000_000;  // Adjust as needed
 ```
 
-**Why:** Reduces reallocations during derivation.
+**Why:** The `max_capacity` both limits growth and signals expected size. Reduces reallocation during derivation.
 
 ### 2. Minimize Rule Count
 
-Each module is tested against every rule on every derivation step.
+Each module is tested against every rule for its symbol on every derivation step.
 
-**Bad:**
 ```rust
-sys.add_rule("A -> B")?;
-sys.add_rule("A -> C")?;  // Stochastic rule
-sys.add_rule("B -> D")?;
-sys.add_rule("C -> D")?;
-// 4 rules = 4× more comparisons
+// Consolidate where possible. Fewer rules = fewer comparisons.
+sys.add_rule("A(x) : x < 5 -> B(x)")?;
+sys.add_rule("A(x) : x >= 5 -> C(x)")?;
 ```
-
-**Good:**
-```rust
-// Use conditions to combine rules
-sys.add_rule("A : rand() < 0.5 -> B")?;
-sys.add_rule("A : rand() >= 0.5 -> C")?;
-sys.add_rule("B -> D")?;
-sys.add_rule("C -> D")?;
-```
-
-**Better:** Consolidate where possible.
 
 ### 3. Simplify Expressions
 
@@ -172,15 +158,13 @@ sys.add_rule("A(x) -> B(sin(x) + cos(x) + tan(x))")?;
 sys.add_rule("A(x) -> B(x * 1.732)")?;  // Approximation
 ```
 
-**Trade-off:** Accuracy vs. speed.
-
 ### 4. Avoid Deep Nesting
 
-Topology calculation is O(N) but with a stack. Deep nesting increases overhead.
+Topology calculation is O(N) but uses a stack. Deep nesting increases overhead.
 
 **Slow:**
 ```
-Axiom: A [ [ [ [ B ] ] ] ]  // 4 levels
+Axiom: A [ [ [ [ B ] ] ] ]  // 4 levels deep
 ```
 
 **Fast:**
@@ -190,16 +174,14 @@ Axiom: A [ B ] [ C ] [ D ]  // 1 level, parallel branches
 
 **Limit:** Max nesting is 4,096 (hard limit to prevent DoS).
 
-### 5. Use Stochastic Rules Wisely
+### 5. Use Constants Instead of Literals
 
-Stochastic rules require random number generation and additional condition checks.
+Constants defined with `#define` are inlined at compile time, with no extra cost. They also enable genetic algorithm coupling (constant mutation affects all references).
 
 ```rust
-sys.set_seed(12345);  // Seed once for determinism
-sys.add_rule("A : rand() < 0.3 -> B")?;
+sys.add_directive("#define ANGLE 45")?;
+sys.add_rule("A -> [ +(ANGLE) B ] [ -(ANGLE) C ]")?;
 ```
-
-**Cost:** `rand()` call + condition evaluation on every match.
 
 ### 6. Batch Derivations
 
@@ -217,7 +199,15 @@ sys.derive(100)?;
 // Process final state
 ```
 
-**Why:** Reduces setup/teardown overhead.
+**Why:** Reduces per-step setup overhead (topology recalculation, buffer reset).
+
+### 7. Seed RNG for Consistent Benchmarking
+
+```rust
+sys.set_seed(42);
+```
+
+Eliminates variance from stochastic rule selection in benchmarks.
 
 ---
 
@@ -230,6 +220,19 @@ cargo bench
 ```
 
 Output will be in `target/criterion/`.
+
+### Benchmark Groups
+
+The benchmark suite (`benches/bench_main.rs`) covers six groups:
+
+| Group | What it Measures |
+|-------|------------------|
+| `Derivation` | Core derive loop: allocation, matching, state push |
+| `Context Matching` | Skip-link navigation, parameter loading, VM eval |
+| `Genetic/Mutation` | Probability and constant perturbation (10-100 rules) |
+| `Genetic/Crossover` | Uniform crossover with constant blending (10-50 rules) |
+| `Genetic/StructuralMutation` | Module insert/delete/swap, bytecode perturbation |
+| `Genetic/CombinedEvolution` | Full cycle: crossover + mutation + structural mutation |
 
 ### Custom Benchmarks
 
@@ -267,26 +270,25 @@ cargo flamegraph --bench bench_main
 
 ## Common Bottlenecks
 
-### 1. String Export
+### 1. State Export
 
 **Problem:**
 ```rust
-let output = sys.export_string()?;  // Slow for large states
+let output = sys.state.display(&sys.interner).to_string();  // Slow for large states
 ```
 
 **Why:** Allocates a new `String` and formats every module.
 
-**Solution:** Only export when needed. Use `state.len()` for progress tracking.
+**Solution:** Only export when needed. Use `sys.state.len()` for progress tracking.
 
 ### 2. Topology Calculation
 
 **Problem:**
 ```rust
-// Called on every derivation if you have branches
-sys.derive(1)?;  // Recalculates topology
+sys.derive(1)?;  // Recalculates topology each step if brackets are present
 ```
 
-**Why:** Symbios recalculates skip-links after each derivation step if `[` and `]` are present.
+**Why:** Symbios recalculates skip-links after each derivation step when `[` and `]` are present.
 
 **Solution:** This is unavoidable for branching L-Systems, but the cost is O(N) which is acceptable.
 
@@ -301,7 +303,7 @@ for _ in 0..1000 {
 
 **Why:** Each `add_rule` parses and compiles the expression.
 
-**Solution:** Add rules once, reuse the system.
+**Solution:** Add rules once, reuse the system. For evolutionary workloads, use `from_source()` which parses all rules in one pass.
 
 ### 4. Excessive Derivations
 
@@ -314,25 +316,68 @@ sys.derive(100)?;  // Exponential growth
 **Why:** L-Systems can grow exponentially (e.g., `A → AA` doubles every step).
 
 **Solution:**
-- Set `state.max_capacity` to catch runaway growth
-- Monitor `state.len()` between derivations
+- Set `sys.max_capacity` to catch runaway growth
+- Monitor `sys.state.len()` between derivations
 - Use pruning rules to limit growth
 
-**Example:**
 ```rust
 sys.add_rule("A(x) : x < 100 -> A(x + 1)")?;  // Growth limit
 ```
 
-### 5. Deep Expression Trees
+### 5. Source Round-Tripping Overhead
 
-**Problem:**
+**Problem:** Evolutionary loops using `SourceGenotype` pay parse + compile + decompile cost per generation.
+
+**Why:** Each `mutate_with_rng` call on `SourceGenotype` parses source → builds `System` → applies operator → calls `to_source()`.
+
+**Solution:** For tight loops where source preservation isn't needed, operate directly on `System` objects and only call `to_source()` for serialization/logging.
+
+---
+
+## Genetic Operator Performance
+
+### Relative Cost
+
+| Operator | Relative Cost | Scales With |
+|----------|--------------|-------------|
+| Probability mutation | Very low | Number of rules |
+| Constant mutation | Very low | Number of constants |
+| Gaussian jitter | Low | Total bytecode instructions |
+| Operator flip | Low | Total bytecode instructions |
+| Structural mutation | Medium | Rules × successors per rule |
+| Rule duplication | Medium | Number of rules |
+| Topological mutation | Low | Number of successor symbols |
+| Literal promotion | Medium | Bytecode instructions × constants |
+| Crossover (uniform) | Medium | Total rules across parents |
+| Crossover (homologous) | Medium | Shared predecessor symbols |
+| BLX-alpha blending | Medium | Shared rule pairs with matching structure |
+| Sub-expression grafting | Medium | Successor sequence length |
+
+### Evolutionary Loop Pattern
+
 ```rust
-sys.add_rule("A(x) -> B((((x + 1) * 2) + 3) * 4)")?;  // Nested
+// Efficient: operate on System objects directly
+let mut population: Vec<System> = /* ... */;
+let crossover_config = CrossoverConfig::default();
+let mutation_config = MutationConfig::default();
+
+for generation in 0..1000 {
+    // Select parents, crossover, mutate
+    let mut offspring = population[0].crossover(&population[1], &crossover_config)?;
+    offspring.mutate(&mutation_config);
+
+    // Evaluate fitness (derive + measure)
+    offspring.set_axiom("A(0)")?;
+    offspring.derive(10)?;
+    let fitness = offspring.state.len();  // Example fitness
+
+    // Only serialize when needed (e.g., checkpointing)
+    if generation % 100 == 0 {
+        let source = offspring.to_source();
+        // Save to file...
+    }
+}
 ```
-
-**Why:** More bytecode instructions = slower VM execution.
-
-**Solution:** Simplify expressions or precompute constants.
 
 ---
 
@@ -341,12 +386,13 @@ sys.add_rule("A(x) -> B((((x + 1) * 2) + 3) * 4)")?;  // Nested
 Before deploying Symbios in production, verify:
 
 - [ ] Rules are minimal and non-redundant
-- [ ] Expressions are simplified
-- [ ] State capacity is set appropriately
+- [ ] Expressions are simplified where possible
+- [ ] State capacity is set appropriately (`sys.max_capacity`)
 - [ ] Derivation depth is bounded
-- [ ] Stochastic rules are used sparingly
-- [ ] Benchmarks pass performance regression tests
+- [ ] Stochastic rules use `set_seed` for reproducibility in testing
+- [ ] Benchmarks pass performance regression tests (`cargo bench`)
 - [ ] Memory usage is profiled for your use case
+- [ ] Evolutionary loops operate on `System` objects (not `SourceGenotype`) in hot paths
 
 ---
 
@@ -362,36 +408,6 @@ Based on benchmarks and real-world usage:
 | Huge (100K+ modules) | 100,000+ | 100+ | Precompute offline |
 
 **Hardware:** Apple M1/M2, AMD Ryzen 5000+, Intel i5/i7 (modern CPUs).
-
----
-
-## Future Optimizations
-
-Potential improvements not yet implemented:
-
-1. **SIMD Parameter Evaluation**: Vectorize expression evaluation across modules
-2. **Parallel Derivation**: Multi-threaded state partitioning
-3. **Rule Caching**: Memoize frequently-matched patterns
-4. **Just-Enough Compilation**: Compile only hot paths
-
-**Trade-offs:** Added complexity, portability concerns (SIMD, threading in WASM).
-
----
-
-## Reporting Performance Issues
-
-If you encounter unexpectedly slow performance:
-
-1. Run benchmarks: `cargo bench`
-2. Profile with `perf` or `flamegraph`
-3. Check `state.len()` growth rate
-4. Verify rule complexity
-5. Report issue with:
-   - System specs
-   - Rule set
-   - Axiom
-   - Derivation depth
-   - Benchmark comparison
 
 ---
 
