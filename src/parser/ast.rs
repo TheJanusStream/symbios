@@ -256,9 +256,17 @@ impl fmt::Display for Rule {
             write!(f, " {}", succ)?;
         }
 
-        // Probability (only if not 1.0)
+        // Probability (only if not 1.0 and not redundant with condition)
         if (self.probability - 1.0).abs() > f64::EPSILON {
-            write!(f, " : {}", self.probability)?;
+            let is_redundant_sugar = if let Some(Expr::Number(n)) = &self.condition {
+                (n - self.probability).abs() < f64::EPSILON
+            } else {
+                false
+            };
+
+            if !is_redundant_sugar {
+                write!(f, " : {}", self.probability)?;
+            }
         }
 
         Ok(())

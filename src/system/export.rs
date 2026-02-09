@@ -391,11 +391,16 @@ pub fn export_rule(
     }
 
     // Decompile condition
-    let condition = if let Some(cond_bytecode) = &rule.condition {
+    let mut condition = if let Some(cond_bytecode) = &rule.condition {
         Some(decompile_with_params(cond_bytecode, &param_map)?)
     } else {
         None
     };
+
+    // Sync numeric condition with probability for consistent export
+    if let Some(Expr::Number(_)) = condition {
+        condition = Some(Expr::Number(rule.probability));
+    }
 
     // Export successors
     let mut successors = Vec::new();
