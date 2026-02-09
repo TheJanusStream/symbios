@@ -160,14 +160,27 @@ impl VirtualMachine {
             .copied()
             .ok_or(VMError::EmptyStack.to_string())?;
 
-        if !res.is_finite() {
-            return Err(VMError::MathError.to_string());
-        }
-        Ok(res)
+        Self::sanitize(res).map_err(|e| e.to_string())
     }
 
     fn pop(&mut self) -> Result<f64, VMError> {
         self.stack.pop().ok_or(VMError::StackUnderflow)
+    }
+
+    /// Clamps non-finite results: NaN becomes MathError, Infinity is clamped
+    /// to f64::MAX/-f64::MAX. This prevents transient singularities (e.g. division
+    /// by near-zero) from killing entire derivations in evolutionary runs.
+    #[inline]
+    fn sanitize(result: f64) -> Result<f64, VMError> {
+        if result.is_nan() {
+            Err(VMError::MathError)
+        } else if result == f64::INFINITY {
+            Ok(f64::MAX)
+        } else if result == f64::NEG_INFINITY {
+            Ok(f64::MIN)
+        } else {
+            Ok(result)
+        }
     }
 
     fn unary_op<F>(&mut self, op: F) -> Result<(), VMError>
@@ -178,10 +191,7 @@ impl VirtualMachine {
             return Err(VMError::StackUnderflow);
         }
         let a = self.stack.pop().unwrap();
-        let result = op(a);
-        if !result.is_finite() {
-            return Err(VMError::MathError);
-        }
+        let result = Self::sanitize(op(a))?;
         self.stack.push(result);
         Ok(())
     }
@@ -197,11 +207,7 @@ impl VirtualMachine {
         let b = self.stack.pop().unwrap();
         let a = self.stack.pop().unwrap();
 
-        let result = op(a, b);
-
-        if !result.is_finite() {
-            return Err(VMError::MathError);
-        }
+        let result = Self::sanitize(op(a, b))?;
 
         self.stack.push(result);
         Ok(())

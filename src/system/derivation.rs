@@ -92,7 +92,8 @@ impl System {
                         )
                     } else {
                         let bucket = self.rules.get(&view.sym);
-                        let mut r = self.rng.random_range(0.0..total_probability);
+                        let safe_total = total_probability.max(f64::MIN_POSITIVE);
+                        let mut r = self.rng.random_range(0.0..safe_total);
                         let mut winner = None;
                         let mut winner_idx = None;
                         for &rule_idx in &self.derive_candidate_indices {

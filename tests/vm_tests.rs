@@ -145,36 +145,41 @@ fn test_comparison_epsilon_consistency() {
 }
 
 #[test]
-fn test_vm_rejects_infinity_in_arithmetic() {
+fn test_vm_clamps_infinity_to_max() {
     let mut vm = VirtualMachine::new();
 
-    // Addition overflow to infinity
+    // Addition overflow to infinity → clamped to f64::MAX
     let code = vec![Op::Push(f64::MAX), Op::Push(f64::MAX), Op::Add];
-    let res = vm.eval(&code, &[], 0.0);
-    assert!(res.is_err(), "Addition producing Inf should be rejected");
+    let res = vm.eval(&code, &[], 0.0).unwrap();
+    assert_eq!(res, f64::MAX, "Addition producing Inf should clamp to MAX");
 
-    // Division by zero produces Inf (not NaN, since div maps 0 -> NaN for divisor,
-    // but large / tiny can produce Inf)
+    // Division large/tiny producing Inf → clamped
     let code = vec![Op::Push(1e308), Op::Push(1e-308), Op::Div];
-    let res = vm.eval(&code, &[], 0.0);
-    assert!(res.is_err(), "Division producing Inf should be rejected");
+    let res = vm.eval(&code, &[], 0.0).unwrap();
+    assert_eq!(res, f64::MAX, "Division producing Inf should clamp to MAX");
 
-    // Pow overflow
+    // Pow overflow → clamped
     let code = vec![Op::Push(1e300), Op::Push(2.0), Op::Pow];
-    let res = vm.eval(&code, &[], 0.0);
-    assert!(res.is_err(), "Pow producing Inf should be rejected");
+    let res = vm.eval(&code, &[], 0.0).unwrap();
+    assert_eq!(res, f64::MAX, "Pow producing Inf should clamp to MAX");
 
-    // Tan at pi/2 (produces very large / Inf depending on precision)
-    let code = vec![Op::Push(std::f64::consts::FRAC_PI_2), Op::Math(MathOp::Tan)];
+    // Negative infinity → clamped to f64::MIN
+    let code = vec![Op::Push(-1e308), Op::Push(1e-308), Op::Div];
+    let res = vm.eval(&code, &[], 0.0).unwrap();
+    assert_eq!(res, f64::MIN, "Negative Inf should clamp to MIN");
+
+    // NaN still rejected
+    let code = vec![Op::Push(0.0), Op::Push(0.0), Op::Div];
     let res = vm.eval(&code, &[], 0.0);
-    // tan(pi/2) may or may not be exactly Inf due to float precision;
-    // if finite, it's a very large number which is acceptable
-    if let Ok(val) = res {
-        assert!(
-            val.is_finite(),
-            "If tan(pi/2) returns Ok, it must be finite"
-        );
-    }
+    assert!(res.is_err(), "NaN should still be rejected");
+
+    // Tan at pi/2 → clamped if Inf, finite otherwise
+    let code = vec![Op::Push(std::f64::consts::FRAC_PI_2), Op::Math(MathOp::Tan)];
+    let res = vm.eval(&code, &[], 0.0).unwrap();
+    assert!(
+        res.is_finite(),
+        "tan(pi/2) result must be finite after clamping"
+    );
 }
 
 #[test]

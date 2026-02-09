@@ -17,6 +17,7 @@ const MAX_RECURSION_DEPTH: usize = 64;
 const MAX_IDENTIFIER_LEN: usize = 64;
 const MAX_ARG_COUNT: usize = 32;
 const MAX_SUCCESSORS: usize = 128;
+const MAX_CONTEXT_LENGTH: usize = 32;
 
 fn space_or_comment<'a, E: ParseError<&'a str>>(input: &'a str) -> IResult<&'a str, (), E> {
     let comment = alt((
@@ -285,6 +286,12 @@ fn parse_rule_structure(input: &str) -> IResult<&str, Rule> {
     )
     .parse(input)
     {
+        if lc.len() > MAX_CONTEXT_LENGTH {
+            return Err(nom::Err::Failure(Error::from_error_kind(
+                next,
+                ErrorKind::TooLarge,
+            )));
+        }
         let (next, _) = ws(c_char('<')).parse(next)?;
         (next, lc)
     } else {
@@ -300,6 +307,12 @@ fn parse_rule_structure(input: &str) -> IResult<&str, Rule> {
             let term = alt((map(ws(c_char(':')), |_| ()), map(ws(tag("->")), |_| ())));
             let (next, (rc, _)) =
                 many_till::<&str, Error<&str>, _, _>(ws(parse_module), peek(term)).parse(next)?;
+            if rc.len() > MAX_CONTEXT_LENGTH {
+                return Err(nom::Err::Failure(Error::from_error_kind(
+                    next,
+                    ErrorKind::TooLarge,
+                )));
+            }
             (next, rc)
         } else {
             (input, Vec::new())

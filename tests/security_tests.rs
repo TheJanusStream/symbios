@@ -1,5 +1,5 @@
 use symbios::System;
-use symbios::parser::{ast::Expr, parse_expr, parse_module};
+use symbios::parser::{ast::Expr, parse_expr, parse_module, parse_rule};
 use symbios::{SymbiosState, core::SymbiosError};
 
 #[test]
@@ -92,4 +92,43 @@ fn test_context_param_shadowing_prevention() {
     // Correct usage: unique names
     let res_valid = sys.add_rule("A(x) < B(y) -> C(x + y)");
     assert!(res_valid.is_ok());
+}
+
+#[test]
+fn test_context_length_limit() {
+    // 33 context modules exceeds MAX_CONTEXT_LENGTH (32)
+    let left_ctx: Vec<&str> = (0..33).map(|_| "A").collect();
+    let rule_str = format!("{} < B -> C", left_ctx.join(" "));
+    assert!(
+        parse_rule(&rule_str).is_err(),
+        "Left context exceeding MAX_CONTEXT_LENGTH should be rejected"
+    );
+
+    // Right context similarly bounded
+    let right_ctx: Vec<&str> = (0..33).map(|_| "A").collect();
+    let rule_str = format!("B > {} -> C", right_ctx.join(" "));
+    assert!(
+        parse_rule(&rule_str).is_err(),
+        "Right context exceeding MAX_CONTEXT_LENGTH should be rejected"
+    );
+
+    // At the limit (32) should succeed
+    let left_ctx: Vec<&str> = (0..32).map(|_| "A").collect();
+    let rule_str = format!("{} < B -> C", left_ctx.join(" "));
+    assert!(
+        parse_rule(&rule_str).is_ok(),
+        "Left context at MAX_CONTEXT_LENGTH should be accepted"
+    );
+}
+
+#[test]
+fn test_zero_probability_no_panic() {
+    let mut sys = System::new();
+    sys.set_axiom("A").unwrap();
+    // Two rules both with probability 0 — derivation must not panic
+    sys.add_rule("0.0 : A -> B").unwrap();
+    sys.add_rule("0.0 : A -> C").unwrap();
+    // Should fall through to identity (no matching rule selected)
+    let result = sys.derive(1);
+    assert!(result.is_ok(), "Zero-probability rules must not panic");
 }
