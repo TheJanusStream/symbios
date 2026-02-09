@@ -71,7 +71,7 @@ impl VirtualMachine {
         self.stack.clear();
 
         for op in code {
-            if self.stack.len() > Self::MAX_STACK_SIZE {
+            if self.stack.len() >= Self::MAX_STACK_SIZE {
                 return Err(VMError::StackOverflow.to_string());
             }
 
