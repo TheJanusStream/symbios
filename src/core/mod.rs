@@ -95,6 +95,7 @@ impl SymbiosState {
             .checked_add(parameters.len())
             .ok_or(SymbiosError::CapacityOverflow)?;
 
+        // Reserve u32::MAX for the NO_LINK topology sentinel value
         if self.modules.len() >= (u32::MAX as usize - 1)
             || new_params_len >= (u32::MAX as usize - 1)
         {

@@ -114,3 +114,58 @@ fn test_multi_parameter_neighbor_binding() {
         "Multi-param neighbor binding failed."
     );
 }
+
+/// Regression test for scratch buffer reuse after a failed match clobbers it.
+///
+/// Scenario: Two rules match symbol P, both with left context. Rule 0 (with left
+/// context L) matches. Rule 1 (with left context Z, which doesn't exist) is checked
+/// next — `matches()` calls `scratch.clear()` even though Rule 1 fails.
+/// If the derivation engine incorrectly reuses the now-empty scratch for Rule 0,
+/// the left context parameters will be missing, producing wrong output.
+#[test]
+fn test_scratch_reuse_after_failed_match() {
+    let mut sys = System::new();
+
+    // Rule 0: L(x) < P(y) -> S(x + y)  — matches when L is the left neighbor
+    // Rule 1: Z(z) < P(y) -> S(z * y)  — never matches (Z not in axiom)
+    // Both rules target P with left context. Rule 1 is checked after Rule 0
+    // and will clear scratch even though it fails.
+    sys.add_rule("L(x) < P(y) -> S(x + y)").unwrap();
+    sys.add_rule("Z(z) < P(y) -> S(z * y)").unwrap();
+
+    sys.set_axiom("L(10) P(5)").unwrap();
+
+    // Run multiple derivation steps to increase chance of hitting the bug
+    // (single matching rule always selected, but scratch was clobbered by Rule 1 check)
+    sys.derive(1).unwrap();
+
+    let output = format!("{}", sys.state.display(&sys.interner));
+    // Correct: S(10 + 5) = S(15). If scratch was clobbered, left context params
+    // would be missing, causing either a panic or S(5) (only predecessor param).
+    assert_eq!(
+        output, "L(10.0000) S(15.0000)",
+        "Scratch buffer reuse corruption: left context params lost. Got: {}",
+        output
+    );
+}
+
+/// Same as above but with right context, ensuring both paths are protected.
+#[test]
+fn test_scratch_reuse_after_failed_match_right_context() {
+    let mut sys = System::new();
+
+    // Rule 0: P(y) > R(x) -> S(x + y)
+    // Rule 1: P(y) > Z(z) -> S(z * y)  — never matches
+    sys.add_rule("P(y) > R(x) -> S(x + y)").unwrap();
+    sys.add_rule("P(y) > Z(z) -> S(z * y)").unwrap();
+
+    sys.set_axiom("P(5) R(10)").unwrap();
+    sys.derive(1).unwrap();
+
+    let output = format!("{}", sys.state.display(&sys.interner));
+    assert_eq!(
+        output, "S(15.0000) R(10.0000)",
+        "Right-context scratch reuse corruption. Got: {}",
+        output
+    );
+}

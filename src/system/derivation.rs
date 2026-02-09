@@ -72,6 +72,10 @@ impl System {
                             self.derive_candidate_indices.push(rule_idx);
                             total_probability += rule.probability;
                             last_matched_idx = Some(rule_idx);
+                        } else {
+                            // scratch was cleared by matches() even though it failed;
+                            // invalidate so we don't reuse stale/empty data.
+                            last_matched_idx = None;
                         }
                     }
                 }

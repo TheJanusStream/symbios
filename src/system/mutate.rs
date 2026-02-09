@@ -296,6 +296,9 @@ impl System {
         bytecode: &mut [Op],
         config: &StructuralMutationConfig,
     ) {
+        if config.op_rate <= 0.0 {
+            return;
+        }
         for op in bytecode.iter_mut() {
             if rng.random::<f64>() >= config.op_rate {
                 continue;

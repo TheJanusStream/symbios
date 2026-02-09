@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use symbios::parser::ast::Expr;
-use symbios::vm::{Compiler, Op, VirtualMachine};
+use symbios::vm::{Compiler, MathOp, Op, VirtualMachine};
 
 #[test]
 fn test_compile_and_eval_arithmetic() {
@@ -142,4 +142,50 @@ fn test_comparison_epsilon_consistency() {
         1.0,
         "Lt should return true for clearly lesser values"
     );
+}
+
+#[test]
+fn test_vm_rejects_infinity_in_arithmetic() {
+    let mut vm = VirtualMachine::new();
+
+    // Addition overflow to infinity
+    let code = vec![Op::Push(f64::MAX), Op::Push(f64::MAX), Op::Add];
+    let res = vm.eval(&code, &[], 0.0);
+    assert!(res.is_err(), "Addition producing Inf should be rejected");
+
+    // Division by zero produces Inf (not NaN, since div maps 0 -> NaN for divisor,
+    // but large / tiny can produce Inf)
+    let code = vec![Op::Push(1e308), Op::Push(1e-308), Op::Div];
+    let res = vm.eval(&code, &[], 0.0);
+    assert!(res.is_err(), "Division producing Inf should be rejected");
+
+    // Pow overflow
+    let code = vec![Op::Push(1e300), Op::Push(2.0), Op::Pow];
+    let res = vm.eval(&code, &[], 0.0);
+    assert!(res.is_err(), "Pow producing Inf should be rejected");
+
+    // Tan at pi/2 (produces very large / Inf depending on precision)
+    let code = vec![Op::Push(std::f64::consts::FRAC_PI_2), Op::Math(MathOp::Tan)];
+    let res = vm.eval(&code, &[], 0.0);
+    // tan(pi/2) may or may not be exactly Inf due to float precision;
+    // if finite, it's a very large number which is acceptable
+    if let Ok(val) = res {
+        assert!(
+            val.is_finite(),
+            "If tan(pi/2) returns Ok, it must be finite"
+        );
+    }
+}
+
+#[test]
+fn test_vm_finite_arithmetic_still_works() {
+    let mut vm = VirtualMachine::new();
+
+    // Normal operations should still succeed
+    let code = vec![Op::Push(100.0), Op::Push(200.0), Op::Add];
+    assert_eq!(vm.eval(&code, &[], 0.0).unwrap(), 300.0);
+
+    let code = vec![Op::Push(10.0), Op::Push(3.0), Op::Div];
+    let res = vm.eval(&code, &[], 0.0).unwrap();
+    assert!((res - 10.0 / 3.0).abs() < 1e-10);
 }

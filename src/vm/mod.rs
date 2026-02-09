@@ -179,7 +179,7 @@ impl VirtualMachine {
         }
         let a = self.stack.pop().unwrap();
         let result = op(a);
-        if result.is_nan() {
+        if !result.is_finite() {
             return Err(VMError::MathError);
         }
         self.stack.push(result);
@@ -199,7 +199,7 @@ impl VirtualMachine {
 
         let result = op(a, b);
 
-        if result.is_nan() {
+        if !result.is_finite() {
             return Err(VMError::MathError);
         }
 
