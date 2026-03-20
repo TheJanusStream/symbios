@@ -1,6 +1,6 @@
 [package]
 name = "symbios"
-version = "1.4.0"
+version = "1.4.1"
 edition = "2024"
 authors = ["Janus"]
 description = "A derivation engine for L-Systems (ABOP compliant)."
@@ -11,15 +11,15 @@ keywords = ["lsystem", "procedural", "generative", "simulation"]
 categories = ["simulation", "game-development", "mathematics"]
 
 [dependencies]
-nom = "8.0.0"
-rand = "0.9.2"
-rand_pcg = "0.9.0"
-thiserror = "2.0.17"
+nom = "8.0"
+rand = "0.9"
+rand_pcg = "0.9"
+thiserror = "2.0"
 serde = { version = "1.0", features = ["derive", "rc"] }
 
 [dev-dependencies]
 serde_json = "1.0"
-criterion = "0.8"
+criterion = { version = "0.8", features = ["html_reports"] }
 
 [[bench]]
 name = "bench_main"
