@@ -78,6 +78,11 @@ pub struct RuntimeRule {
     /// Original parameter names from source for high-fidelity export.
     /// Order: predecessor params, then left context params, then right context params.
     pub param_names: Vec<String>,
+    /// Per-rule ignore-list override (issue #95). `None` means matching uses
+    /// the system-global `ignored_symbols`. `Some(list)` fully replaces the
+    /// global list for this rule, including the empty-list case (`{ ignore: }`)
+    /// which disables ignoring entirely for this rule.
+    pub ignored_symbols: Option<Vec<u16>>,
 }
 
 /// The primary interface for defining and simulating an L-System.
@@ -236,9 +241,27 @@ impl System {
         let mut param_names = Vec::new();
         let mut expected_arities = Vec::new();
 
+        // `age` is a reserved identifier in expressions: the compiler emits
+        // Op::LoadAge for it (see src/vm/compiler.rs). Allowing a parameter
+        // named `age` in any binding position would silently shadow that
+        // reserved access in successor expressions, since the compiler's
+        // hard-coded check fires before the param-map lookup. Reject early.
+        let reject_age = |name: &str, where_: &str| -> Result<(), SystemError> {
+            if name == "age" {
+                Err(SystemError::CompileError(format!(
+                    "Parameter name `age` is reserved (predecessor age). \
+                     Cannot bind in {}.",
+                    where_
+                )))
+            } else {
+                Ok(())
+            }
+        };
+
         expected_arities.push(rule_ast.predecessor.params.len());
         for param in &rule_ast.predecessor.params {
             if let ast::Expr::Variable(name) = param {
+                reject_age(name, "predecessor")?;
                 if param_names.contains(name) {
                     return Err(SystemError::CompileError(format!("Shadowing: {}", name)));
                 }
@@ -252,6 +275,7 @@ impl System {
             expected_arities.push(m.params.len());
             for param in &m.params {
                 if let ast::Expr::Variable(name) = param {
+                    reject_age(name, "left context")?;
                     if param_names.contains(name) {
                         return Err(SystemError::CompileError(format!(
                             "Shadowing or ambiguous parameter in left context: {}",
@@ -267,6 +291,7 @@ impl System {
             expected_arities.push(m.params.len());
             for param in &m.params {
                 if let ast::Expr::Variable(name) = param {
+                    reject_age(name, "right context")?;
                     if param_names.contains(name) {
                         return Err(SystemError::CompileError(format!(
                             "Shadowing or ambiguous parameter in right context: {}",
@@ -339,6 +364,23 @@ impl System {
             self.symbol_arities.entry(sym_id).or_insert(arity);
         }
 
+        // Resolve per-rule ignore list to interner IDs if present.
+        let runtime_ignored = if let Some(syms) = &rule_ast.ignored_symbols {
+            let mut ids = Vec::with_capacity(syms.len());
+            for s in syms {
+                let id = self
+                    .interner
+                    .get_or_intern(s)
+                    .map_err(SystemError::InternerError)?;
+                if !ids.contains(&id) {
+                    ids.push(id);
+                }
+            }
+            Some(ids)
+        } else {
+            None
+        };
+
         let new_rule = RuntimeRule {
             predecessor: pred_sym,
             left_context: left_ctx,
@@ -348,6 +390,7 @@ impl System {
             successors: runtime_successors.clone(),
             expected_arities,
             param_names,
+            ignored_symbols: runtime_ignored,
         };
 
         // Track predecessor arity

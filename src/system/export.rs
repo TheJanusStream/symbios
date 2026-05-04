@@ -409,6 +409,16 @@ pub fn export_rule(
         successors.push(succ);
     }
 
+    // Round-trip per-rule ignore list: resolve each interned id back to its
+    // string form. If a symbol is unknown to the interner we silently drop
+    // it — that should never happen in practice (interner is monotonic) but
+    // we'd rather export a slightly lossy rule than abort.
+    let ignored_symbols = rule.ignored_symbols.as_ref().map(|ids| {
+        ids.iter()
+            .filter_map(|&id| interner.resolve(id).map(|s| s.to_string()))
+            .collect::<Vec<_>>()
+    });
+
     Ok(Rule {
         label: None, // Labels are not preserved in RuntimeRule
         probability: rule.probability,
@@ -417,6 +427,7 @@ pub fn export_rule(
         right_context,
         condition,
         successors,
+        ignored_symbols,
     })
 }
 
@@ -469,6 +480,7 @@ mod tests {
             ],
             expected_arities: vec![0],
             param_names: vec![],
+            ignored_symbols: None,
         };
 
         let config = ExportConfig::default();
@@ -495,6 +507,7 @@ mod tests {
             }],
             expected_arities: vec![1],
             param_names: vec!["x".into()],
+            ignored_symbols: None,
         };
 
         let config = ExportConfig {
@@ -526,6 +539,7 @@ mod tests {
             }],
             expected_arities: vec![0, 0, 0],
             param_names: vec![],
+            ignored_symbols: None,
         };
 
         let config = ExportConfig::default();
@@ -551,6 +565,7 @@ mod tests {
             }],
             expected_arities: vec![0],
             param_names: vec![],
+            ignored_symbols: None,
         };
 
         let config = ExportConfig::default();
@@ -569,6 +584,7 @@ mod tests {
             successors: vec![],
             expected_arities: vec![2, 1, 3], // pred has 2 params, left has 1, right has 3
             param_names: vec![],
+            ignored_symbols: None,
         };
 
         let config = ExportConfig::synthetic(&rule);

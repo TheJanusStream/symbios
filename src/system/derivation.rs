@@ -50,66 +50,121 @@ impl System {
                     .get_view(index)
                     .ok_or(crate::core::SymbiosError::InvalidIndex(index))?;
 
-                // Reuse scratch buffer for candidate indices (avoids per-module allocation)
-                self.derive_candidate_indices.clear();
-                let mut total_probability = 0.0;
                 // Track the last matched rule index to enable scratch buffer reuse
                 let mut last_matched_idx: Option<usize> = None;
 
-                if let Some(bucket) = self.rules.get(&view.sym) {
-                    for (rule_idx, rule) in bucket.iter().enumerate() {
-                        // view.sym is guaranteed to match rule.predecessor here
-                        let is_match = matching::matches(
-                            &self.state,
-                            index,
-                            rule,
-                            &self.ignored_symbols,
-                            &mut vm,
-                            &mut self.scratch,
-                        )?;
+                let bucket = self.rules.get(&view.sym);
 
-                        if is_match {
-                            self.derive_candidate_indices.push(rule_idx);
-                            total_probability += rule.probability;
-                            last_matched_idx = Some(rule_idx);
-                        } else {
-                            // scratch was cleared by matches() even though it failed;
-                            // invalidate so we don't reuse stale/empty data.
-                            last_matched_idx = None;
-                        }
-                    }
-                }
-
-                // Select rule from candidates using indices, tracking which index was selected
+                // Select rule, branching on bucket size. Issue #92: most real
+                // grammars have many symbols with exactly one rule. The
+                // single-rule fast path skips the candidate buffer entirely,
+                // saving the push/clear/loop overhead per module.
                 let (selected_rule, selected_idx): (Option<&RuntimeRule>, Option<usize>) =
-                    if self.derive_candidate_indices.is_empty() || total_probability <= 0.0 {
-                        (None, None)
-                    } else if self.derive_candidate_indices.len() == 1 {
-                        let idx = self.derive_candidate_indices[0];
-                        (
-                            self.rules.get(&view.sym).and_then(|b| b.get(idx)),
-                            Some(idx),
-                        )
-                    } else {
-                        let bucket = self.rules.get(&view.sym);
-                        let safe_total = total_probability.max(f64::MIN_POSITIVE);
-                        let mut r = self.rng.random_range(0.0..safe_total);
-                        let mut winner = None;
-                        let mut winner_idx = None;
-                        let last_candidate = self.derive_candidate_indices.len() - 1;
-                        for (i, &rule_idx) in self.derive_candidate_indices.iter().enumerate() {
-                            if let Some(rule) = bucket.and_then(|b| b.get(rule_idx)) {
-                                // Last candidate always wins to absorb any
-                                // floating-point residual, eliminating bias.
-                                if r < rule.probability || i == last_candidate {
-                                    winner = Some(rule);
-                                    winner_idx = Some(rule_idx);
-                                    break;
+                    match bucket {
+                        Some(b) if b.len() == 1 => {
+                            // Fast path: a single rule. Skip the candidate
+                            // buffer, but still honor the slow path's
+                            // `total_probability <= 0.0` filter — explicit
+                            // probability 0.0 suppresses even a sole matching
+                            // rule (see test_explicit_probability_not_overwritten
+                            // _by_numeric_condition in hardening_coverage_tests).
+                            let rule = &b[0];
+                            if rule.probability <= 0.0 {
+                                (None, None)
+                            } else {
+                                // Issue #95: per-rule ignore list overrides global.
+                                let ignored: &[u16] = rule
+                                    .ignored_symbols
+                                    .as_deref()
+                                    .unwrap_or(&self.ignored_symbols);
+                                let is_match = matching::matches(
+                                    &self.state,
+                                    index,
+                                    rule,
+                                    ignored,
+                                    &mut vm,
+                                    &mut self.scratch,
+                                )?;
+                                if is_match {
+                                    last_matched_idx = Some(0);
+                                    (Some(rule), Some(0))
+                                } else {
+                                    (None, None)
                                 }
-                                r -= rule.probability;
                             }
                         }
-                        (winner, winner_idx)
+                        Some(b) => {
+                            // Slow path: 0 or 2+ rules. Populate the candidate
+                            // buffer, then weight-sample.
+                            self.derive_candidate_indices.clear();
+                            let mut total_probability = 0.0;
+                            for (rule_idx, rule) in b.iter().enumerate() {
+                                // view.sym is guaranteed to match rule.predecessor here
+                                // Issue #95: per-rule ignore list overrides global.
+                                let ignored: &[u16] = rule
+                                    .ignored_symbols
+                                    .as_deref()
+                                    .unwrap_or(&self.ignored_symbols);
+                                let is_match = matching::matches(
+                                    &self.state,
+                                    index,
+                                    rule,
+                                    ignored,
+                                    &mut vm,
+                                    &mut self.scratch,
+                                )?;
+
+                                if is_match {
+                                    self.derive_candidate_indices.push(rule_idx);
+                                    total_probability += rule.probability;
+                                    last_matched_idx = Some(rule_idx);
+                                } else {
+                                    // scratch was cleared by matches() even though it failed;
+                                    // invalidate so we don't reuse stale/empty data.
+                                    last_matched_idx = None;
+                                }
+                            }
+
+                            if self.derive_candidate_indices.is_empty() || total_probability <= 0.0
+                            {
+                                (None, None)
+                            } else if self.derive_candidate_indices.len() == 1 {
+                                let idx = self.derive_candidate_indices[0];
+                                (b.get(idx), Some(idx))
+                            } else {
+                                // Sample directly off `total_probability` rather than
+                                // floor-clamping to MIN_POSITIVE. Issue #91: the prior
+                                // `random_range(0.0..safe_total)` distorted weight
+                                // ratios when total_probability was subnormal — most
+                                // r values landed above the per-rule weights and the
+                                // last-candidate fallback won almost every time.
+                                // `random::<f64>() * total_probability` preserves
+                                // ratios for any total_probability > 0 (the early
+                                // return above filters out the zero/negative case),
+                                // and panics nowhere because it never divides by or
+                                // ranges over zero.
+                                let mut r = self.rng.random::<f64>() * total_probability;
+                                let mut winner = None;
+                                let mut winner_idx = None;
+                                let last_candidate = self.derive_candidate_indices.len() - 1;
+                                for (i, &rule_idx) in
+                                    self.derive_candidate_indices.iter().enumerate()
+                                {
+                                    if let Some(rule) = b.get(rule_idx) {
+                                        // Last candidate always wins to absorb any
+                                        // floating-point residual, eliminating bias.
+                                        if r < rule.probability || i == last_candidate {
+                                            winner = Some(rule);
+                                            winner_idx = Some(rule_idx);
+                                            break;
+                                        }
+                                        r -= rule.probability;
+                                    }
+                                }
+                                (winner, winner_idx)
+                            }
+                        }
+                        None => (None, None),
                     };
 
                 // Check if we can reuse scratch indices (selected rule was last matched)
@@ -119,6 +174,15 @@ impl System {
                     // Clear and reuse generation buffers
                     self.gen_context_frame.clear();
                     self.gen_context_frame.extend_from_slice(view.params);
+
+                    // Issue #95: per-rule ignore list overrides global. The
+                    // post-selection context match must use the same list as
+                    // the matching::matches() call did, so scratch reuse and
+                    // re-matching agree on which symbols to skip.
+                    let rule_ignored: &[u16] = rule
+                        .ignored_symbols
+                        .as_deref()
+                        .unwrap_or(&self.ignored_symbols);
 
                     if !rule.left_context.is_empty() {
                         // Optimization: reuse scratch indices if selected rule was last matched,
@@ -131,7 +195,7 @@ impl System {
                                 &self.state,
                                 index,
                                 &rule.left_context,
-                                &self.ignored_symbols,
+                                rule_ignored,
                                 &mut self.gen_left_indices,
                             );
                             &self.gen_left_indices
@@ -155,7 +219,7 @@ impl System {
                                 &self.state,
                                 index,
                                 &rule.right_context,
-                                &self.ignored_symbols,
+                                rule_ignored,
                                 &mut self.gen_right_indices,
                             );
                             &self.gen_right_indices

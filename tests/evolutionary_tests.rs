@@ -31,6 +31,61 @@ fn test_reset_restores_initial_state() {
     assert_eq!(sys.interner.resolve(view.sym), Some("A"));
 }
 
+/// Issue #94: parametric axioms (e.g. `A(1) B(2)`) must round-trip through
+/// reset() with their values intact.
+#[test]
+fn test_reset_preserves_axiom_parameter_values() {
+    let mut sys = System::new();
+    sys.add_rule("A(x) -> A(x + 10)").unwrap();
+    sys.set_axiom("A(1) B(2, 3.5)").unwrap();
+
+    // Capture pre-derive snapshot.
+    let initial: Vec<(u16, Vec<f64>)> = (0..sys.state.len())
+        .map(|i| {
+            let v = sys.state.get_view(i).unwrap();
+            (v.sym, v.params.to_vec())
+        })
+        .collect();
+
+    sys.derive(5).unwrap();
+    // A's parameter should have been incremented; if state is unchanged, the
+    // derive did not run and the test below tells us nothing.
+    let post_derive_a = sys.state.get_view(0).unwrap().params.to_vec();
+    assert_ne!(post_derive_a, initial[0].1, "derive must mutate A's param");
+
+    // Reset: parameter values must be exactly the parsed axiom values.
+    assert!(sys.reset());
+    assert_eq!(sys.state.len(), initial.len());
+    for (i, (sym, params)) in initial.iter().enumerate() {
+        let v = sys.state.get_view(i).unwrap();
+        assert_eq!(v.sym, *sym, "symbol mismatch at module {}", i);
+        assert_eq!(
+            v.params,
+            params.as_slice(),
+            "parameter values must be preserved at module {}",
+            i
+        );
+    }
+}
+
+/// Issue #94: ensure parametric axiom round-trips through SourceGenotype-style
+/// reset cycles used by the GA. Multiple reset+derive iterations must each
+/// start from the same parameter values.
+#[test]
+fn test_reset_cycles_preserve_axiom_parameters() {
+    let mut sys = System::new();
+    sys.add_rule("A(x) -> A(x * 2)").unwrap();
+    sys.set_axiom("A(7.25)").unwrap();
+
+    for cycle in 0..5 {
+        assert!(sys.reset(), "reset cycle {} failed", cycle);
+        assert_eq!(sys.state.len(), 1);
+        let p = sys.state.get_view(0).unwrap().params[0];
+        assert_eq!(p, 7.25, "axiom param drifted at cycle {}", cycle);
+        sys.derive(3).unwrap();
+    }
+}
+
 #[test]
 fn test_reset_returns_false_without_axiom() {
     let mut sys = System::new();

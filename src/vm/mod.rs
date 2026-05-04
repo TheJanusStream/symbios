@@ -8,9 +8,33 @@ pub use decompiler::{Decompiler, decompile, decompile_with_params};
 pub use ops::{MathOp, Op};
 use std::fmt;
 
-/// Robust floating point equality check.
+/// Default *relative* tolerance used by [`float_eq`] and the VM's comparison ops.
+///
+/// Chosen as a balance: tight enough to surface meaningful inequality between
+/// distinct user-visible parameter values (which are typically O(1)–O(10^3) in
+/// L-system grammars and rarely require resolution finer than ~8 significant
+/// decimal digits), and loose enough to absorb the few ULPs of round-off that
+/// accumulate across a single rule's arithmetic chain.
+///
+/// Deep parametric derivations (50+ generations) where round-off compounds may
+/// need a looser value; for those workflows construct the VM with
+/// [`VirtualMachine::with_epsilon`] or call [`VirtualMachine::set_epsilon`].
+pub const DEFAULT_RELATIVE_EPSILON: f64 = 1e-8;
+
+/// Robust floating point equality check using [`DEFAULT_RELATIVE_EPSILON`].
+///
+/// See [`float_eq_eps`] for the parameterized variant.
 #[inline]
 pub fn float_eq(a: f64, b: f64) -> bool {
+    float_eq_eps(a, b, DEFAULT_RELATIVE_EPSILON)
+}
+
+/// Robust floating point equality check with a caller-supplied relative
+/// tolerance. Falls back to an absolute `f64::EPSILON * 100.0` test when either
+/// operand is zero or both are subnormal, since relative tolerance is
+/// ill-defined near zero.
+#[inline]
+pub fn float_eq_eps(a: f64, b: f64, relative_eps: f64) -> bool {
     if a == b {
         return true;
     }
@@ -20,7 +44,7 @@ pub fn float_eq(a: f64, b: f64) -> bool {
     if a == 0.0 || b == 0.0 || (abs_a + abs_b < f64::MIN_POSITIVE) {
         return diff < (f64::EPSILON * 100.0);
     }
-    diff / (abs_a + abs_b).min(f64::MAX) < 1e-8
+    diff / (abs_a + abs_b).min(f64::MAX) < relative_eps
 }
 
 #[derive(Debug, PartialEq)]
@@ -48,9 +72,23 @@ impl fmt::Display for VMError {
 
 impl std::error::Error for VMError {}
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct VirtualMachine {
     stack: Vec<f64>,
+    /// Relative tolerance used by [`Op::Eq`], [`Op::Ne`], and the
+    /// epsilon-aware [`Op::Gt`]/[`Op::Lt`]/[`Op::Ge`]/[`Op::Le`] ops.
+    ///
+    /// Defaults to [`DEFAULT_RELATIVE_EPSILON`]. Override via
+    /// [`VirtualMachine::with_epsilon`] / [`VirtualMachine::set_epsilon`] for
+    /// workloads (e.g. deep parametric chains) where the default would treat
+    /// numerically distinct values as equal.
+    relative_epsilon: f64,
+}
+
+impl Default for VirtualMachine {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl VirtualMachine {
@@ -59,7 +97,36 @@ impl VirtualMachine {
     pub fn new() -> Self {
         Self {
             stack: Vec::with_capacity(64),
+            relative_epsilon: DEFAULT_RELATIVE_EPSILON,
         }
+    }
+
+    /// Constructs a VM with a custom relative epsilon for floating-point
+    /// equality. Non-finite or non-positive values fall back to
+    /// [`DEFAULT_RELATIVE_EPSILON`] (silent: a non-positive epsilon would make
+    /// `Eq` fire only on bit-exact equality, which is almost never what the
+    /// caller intended).
+    pub fn with_epsilon(relative_eps: f64) -> Self {
+        let mut vm = Self::new();
+        vm.set_epsilon(relative_eps);
+        vm
+    }
+
+    /// Sets the relative epsilon for floating-point comparisons.
+    ///
+    /// Non-finite or non-positive values are clamped to
+    /// [`DEFAULT_RELATIVE_EPSILON`].
+    pub fn set_epsilon(&mut self, relative_eps: f64) {
+        self.relative_epsilon = if relative_eps.is_finite() && relative_eps > 0.0 {
+            relative_eps
+        } else {
+            DEFAULT_RELATIVE_EPSILON
+        };
+    }
+
+    /// Returns the relative epsilon currently in use.
+    pub fn epsilon(&self) -> f64 {
+        self.relative_epsilon
     }
 
     pub fn eval(
@@ -97,24 +164,38 @@ impl VirtualMachine {
                     let a = self.pop().map_err(|e| e.to_string())?;
                     self.stack.push(-a);
                 }
-                Op::Eq => self.compare_op(float_eq).map_err(|e| e.to_string())?,
-                Op::Ne => self
-                    .compare_op(|a, b| !float_eq(a, b))
-                    .map_err(|e| e.to_string())?,
+                Op::Eq => {
+                    let eps = self.relative_epsilon;
+                    self.compare_op(|a, b| float_eq_eps(a, b, eps))
+                        .map_err(|e| e.to_string())?
+                }
+                Op::Ne => {
+                    let eps = self.relative_epsilon;
+                    self.compare_op(|a, b| !float_eq_eps(a, b, eps))
+                        .map_err(|e| e.to_string())?
+                }
                 // Epsilon-aware comparisons for mathematical consistency:
                 // If float_eq(a, b), then Ge/Le must be true and Gt/Lt must be false.
-                Op::Gt => self
-                    .compare_op(|a, b| a > b && !float_eq(a, b))
-                    .map_err(|e| e.to_string())?,
-                Op::Lt => self
-                    .compare_op(|a, b| a < b && !float_eq(a, b))
-                    .map_err(|e| e.to_string())?,
-                Op::Ge => self
-                    .compare_op(|a, b| a >= b || float_eq(a, b))
-                    .map_err(|e| e.to_string())?,
-                Op::Le => self
-                    .compare_op(|a, b| a <= b || float_eq(a, b))
-                    .map_err(|e| e.to_string())?,
+                Op::Gt => {
+                    let eps = self.relative_epsilon;
+                    self.compare_op(|a, b| a > b && !float_eq_eps(a, b, eps))
+                        .map_err(|e| e.to_string())?
+                }
+                Op::Lt => {
+                    let eps = self.relative_epsilon;
+                    self.compare_op(|a, b| a < b && !float_eq_eps(a, b, eps))
+                        .map_err(|e| e.to_string())?
+                }
+                Op::Ge => {
+                    let eps = self.relative_epsilon;
+                    self.compare_op(|a, b| a >= b || float_eq_eps(a, b, eps))
+                        .map_err(|e| e.to_string())?
+                }
+                Op::Le => {
+                    let eps = self.relative_epsilon;
+                    self.compare_op(|a, b| a <= b || float_eq_eps(a, b, eps))
+                        .map_err(|e| e.to_string())?
+                }
                 Op::And => self
                     .binary_op(|a, b| if a != 0.0 && b != 0.0 { 1.0 } else { 0.0 })
                     .map_err(|e| e.to_string())?,

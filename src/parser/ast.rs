@@ -82,6 +82,11 @@ pub struct Rule {
     pub right_context: Vec<ModuleSym>,
     pub condition: Option<Expr>,
     pub successors: Vec<ModuleSym>,
+    /// Per-rule ignore-list override (issue #95). `None` means the rule
+    /// inherits the system-global `#ignore` list at match time. `Some(list)`
+    /// fully replaces the global list for this rule, including the empty-list
+    /// case (`{ ignore: }`) which suppresses all ignoring.
+    pub ignored_symbols: Option<Vec<String>>,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -319,6 +324,15 @@ impl fmt::Display for Rule {
             write!(f, " {}", succ)?;
         }
 
+        // Per-rule ignore postfix (issue #95)
+        if let Some(syms) = &self.ignored_symbols {
+            write!(f, " {{ ignore:")?;
+            for sym in syms {
+                write!(f, " {}", sym)?;
+            }
+            write!(f, " }}")?;
+        }
+
         Ok(())
     }
 }
@@ -489,6 +503,7 @@ mod tests {
                     params: vec![],
                 },
             ],
+            ignored_symbols: None,
         };
         assert_eq!(rule.to_string(), "A -> A B");
     }
@@ -512,6 +527,7 @@ mod tests {
                 symbol: "B".into(),
                 params: vec![Expr::Variable("x".into())],
             }],
+            ignored_symbols: None,
         };
         assert_eq!(rule.to_string(), "p1: A(x) : x > 10 -> B(x)");
     }
@@ -538,6 +554,7 @@ mod tests {
                 symbol: "D".into(),
                 params: vec![],
             }],
+            ignored_symbols: None,
         };
         assert_eq!(rule.to_string(), "A < B > C -> D");
     }
@@ -558,6 +575,7 @@ mod tests {
                 symbol: "B".into(),
                 params: vec![],
             }],
+            ignored_symbols: None,
         };
         assert_eq!(rule.to_string(), "0.5 : A -> B");
     }

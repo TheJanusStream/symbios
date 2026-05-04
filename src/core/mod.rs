@@ -24,16 +24,54 @@ pub enum SymbiosError {
     InvalidNumericValue,
 }
 
+/// The number of distinct topology pair kinds tracked per module.
+///
+/// Currently 2: branch pairs (`[]`) and polygon pairs (`{}`). Each module
+/// stores an independent skip-link per kind, so calling
+/// [`SymbiosState::calculate_topology_kind`] for one kind does not overwrite
+/// links established for another. See [`PairKind`].
+pub const NUM_TOPOLOGY_KINDS: usize = 2;
+
+/// The kind of bracket pair tracked by a topology skip-link.
+///
+/// Each [`SymbiosState`] module reserves one [`u32`] link slot per variant.
+/// Standard L-system convention pairs `Branch` with `[]` (subtree boundaries
+/// for context-sensitive matching) and `Polygon` with `{}` (renderer-side
+/// polygon boundaries).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(usize)]
+pub enum PairKind {
+    Branch = 0,
+    Polygon = 1,
+}
+
+impl PairKind {
+    /// Index into the per-module `topology_links` array.
+    #[inline]
+    pub const fn slot(self) -> usize {
+        self as usize
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ModuleData {
     symbol: u16,
     birth_time: f64, // Absolute time for O(1) advance_time
     param_start: u32,
     param_len: u16,
-    topology_link: u32,
+    /// Per-pair-kind skip targets (see [`PairKind`]). Slot value of
+    /// [`SymbiosState::NO_LINK`] means "no link for that kind".
+    topology_links: [u32; NUM_TOPOLOGY_KINDS],
 }
 
 // Compile-time size assertion: keep PERFORMANCE.md in sync.
+// Layout (Rust default repr, fields reordered for minimum size):
+//   birth_time: f64       (8) — forces 8-byte alignment
+//   param_start: u32      (4)
+//   topology_links: [u32; 2] (8)  — replaces the old single u32 + 4 bytes of padding
+//   symbol: u16           (2)
+//   param_len: u16        (2)
+// Total: 24 bytes, no trailing padding.
 const _: () = assert!(std::mem::size_of::<ModuleData>() == 24);
 
 /// Represents the current state of the L-System simulation.
@@ -122,22 +160,47 @@ impl SymbiosState {
             birth_time: self.current_time - age,
             param_start,
             param_len: parameters.len() as u16,
-            topology_link: Self::NO_LINK,
+            topology_links: [Self::NO_LINK; NUM_TOPOLOGY_KINDS],
         });
         Ok(())
     }
 
-    /// Pre-calculates skip-links for branching structures.
+    /// Pre-calculates branch skip-links for `[ ]`-style bracket pairs.
     ///
-    /// This enables O(1) context matching over branches.
+    /// Shorthand for [`Self::calculate_topology_kind`] with [`PairKind::Branch`].
+    /// Preserved for back-compat: existing callers (parser, derivation,
+    /// downstream crates) get the same behavior they had before per-kind
+    /// links existed.
     pub fn calculate_topology(
         &mut self,
         open_sym: u16,
         close_sym: u16,
     ) -> Result<(), SymbiosError> {
+        self.calculate_topology_kind(open_sym, close_sym, PairKind::Branch)
+    }
+
+    /// Pre-calculates skip-links for the given pair kind.
+    ///
+    /// Each module's per-kind slot is independent: linking `{ }` polygons does
+    /// not erase prior `[ ]` branch links and vice versa. See [`PairKind`] and
+    /// [`NUM_TOPOLOGY_KINDS`].
+    ///
+    /// Calling this twice with the same kind on overlapping modules will
+    /// overwrite the prior result — the function does not pre-clear other
+    /// modules' slots, so callers that change `open_sym`/`close_sym` between
+    /// runs may observe stale links on modules whose symbol no longer matches.
+    /// In normal operation this is fine: derivations rebuild state into a
+    /// fresh back buffer where every slot starts at [`Self::NO_LINK`].
+    pub fn calculate_topology_kind(
+        &mut self,
+        open_sym: u16,
+        close_sym: u16,
+        kind: PairKind,
+    ) -> Result<(), SymbiosError> {
         if open_sym == close_sym {
             return Err(SymbiosError::AmbiguousTopology);
         }
+        let slot = kind.slot();
         let mut stack = Vec::new();
         for i in 0..self.modules.len() {
             let sym = self.modules[i].symbol;
@@ -148,8 +211,8 @@ impl SymbiosState {
                 stack.push(i as u32);
             } else if sym == close_sym {
                 if let Some(si) = stack.pop() {
-                    self.modules[si as usize].topology_link = i as u32;
-                    self.modules[i].topology_link = si;
+                    self.modules[si as usize].topology_links[slot] = i as u32;
+                    self.modules[i].topology_links[slot] = si;
                 } else {
                     return Err(SymbiosError::UnmatchedBracket(i));
                 }
@@ -167,10 +230,13 @@ impl SymbiosState {
         let start = m.param_start as usize;
         let end = start + (m.param_len as usize);
 
-        let skip = if m.topology_link == Self::NO_LINK {
-            None
-        } else {
-            Some(m.topology_link as usize)
+        let resolve = |slot: usize| -> Option<usize> {
+            let v = m.topology_links[slot];
+            if v == Self::NO_LINK {
+                None
+            } else {
+                Some(v as usize)
+            }
         };
 
         let params = self.params.get(start..end)?;
@@ -179,7 +245,8 @@ impl SymbiosState {
             sym: m.symbol,
             age: self.current_time - m.birth_time,
             params,
-            skip_idx: skip,
+            skip_idx: resolve(PairKind::Branch.slot()),
+            polygon_skip_idx: resolve(PairKind::Polygon.slot()),
         })
     }
 
@@ -248,5 +315,21 @@ pub struct ModuleView<'a> {
     pub sym: u16,
     pub age: f64,
     pub params: &'a [f64],
+    /// Skip target for branch pairs ([`PairKind::Branch`], typically `[ ]`).
+    /// `None` if this module is not part of any registered branch pair.
     pub skip_idx: Option<usize>,
+    /// Skip target for polygon pairs ([`PairKind::Polygon`], typically `{ }`).
+    /// `None` if this module is not part of any registered polygon pair.
+    pub polygon_skip_idx: Option<usize>,
+}
+
+impl<'a> ModuleView<'a> {
+    /// Returns the skip target for the given pair kind, if any.
+    #[inline]
+    pub fn skip_idx_for(&self, kind: PairKind) -> Option<usize> {
+        match kind {
+            PairKind::Branch => self.skip_idx,
+            PairKind::Polygon => self.polygon_skip_idx,
+        }
+    }
 }

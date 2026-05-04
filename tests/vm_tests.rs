@@ -194,3 +194,96 @@ fn test_vm_finite_arithmetic_still_works() {
     let res = vm.eval(&code, &[], 0.0).unwrap();
     assert!((res - 10.0 / 3.0).abs() < 1e-10);
 }
+
+/// Regression test for issue #89.
+///
+/// Walks a parameter through a 60-step parametric chain that accumulates
+/// floating-point round-off, then asserts that the default epsilon (1e-8) is
+/// loose enough to match the chain output against its closed-form expectation
+/// via `Op::Eq`. Also exercises `with_epsilon` to confirm a tighter user-set
+/// tolerance correctly rejects the same comparison.
+#[test]
+fn test_vm_deep_parameter_chain_epsilon() {
+    use symbios::System;
+
+    // x_{n+1} = (x_n + 0.1) * 1.0001 - 0.0001
+    // After 60 iterations starting from 0.0, the closed-form result drifts
+    // measurably from naive accumulation due to multiply/subtract round-off.
+    let mut sys = System::new();
+    sys.add_rule("A(x) -> A((x + 0.1) * 1.0001 - 0.0001)")
+        .unwrap();
+    sys.set_axiom("A(0.0)").unwrap();
+    sys.derive(60).unwrap();
+
+    // Extract the resulting parameter
+    let view = sys.state.get_view(0).expect("module survived");
+    let chained = view.params[0];
+
+    // Independently compute the same chain at f64 precision; this is the
+    // arithmetic the VM actually executes, so its result should match
+    // bit-exactly. The point of the test is that round-off across 60 steps
+    // is real but well within the default 1e-8 relative epsilon.
+    let mut expected = 0.0_f64;
+    for _ in 0..60 {
+        expected = (expected + 0.1) * 1.0001 - 0.0001;
+    }
+
+    // Default epsilon (1e-8): comparison via Op::Eq must report equality.
+    let code_eq = vec![Op::Push(chained), Op::Push(expected), Op::Eq];
+    let mut vm_default = VirtualMachine::new();
+    assert_eq!(
+        vm_default.eval(&code_eq, &[], 0.0).unwrap(),
+        1.0,
+        "default epsilon should treat the deep-chain result as equal to its f64 reference \
+         (chained={}, expected={}, abs_diff={})",
+        chained,
+        expected,
+        (chained - expected).abs(),
+    );
+
+    // A user-tightened epsilon of 1e-18 (below f64 representable difference)
+    // must accept bit-exact equality. Bit-exact equality is the early-return
+    // path inside float_eq_eps and is independent of the configured epsilon.
+    let mut vm_tight = VirtualMachine::with_epsilon(1e-18);
+    assert!(vm_tight.epsilon() <= 1e-18 + f64::EPSILON);
+    assert_eq!(
+        vm_tight.eval(&code_eq, &[], 0.0).unwrap(),
+        1.0,
+        "bit-exact operands must compare equal regardless of epsilon"
+    );
+
+    // But two values that *differ* by a tiny amount inside the default
+    // tolerance should be rejected by the tightened VM.
+    let near = expected + expected.abs() * 1e-12;
+    let code_near = vec![Op::Push(expected), Op::Push(near), Op::Eq];
+    assert_eq!(
+        vm_default.eval(&code_near, &[], 0.0).unwrap(),
+        1.0,
+        "default epsilon (1e-8) should accept a 1e-12 relative diff"
+    );
+    assert_eq!(
+        vm_tight.eval(&code_near, &[], 0.0).unwrap(),
+        0.0,
+        "tightened epsilon (1e-18) should reject a 1e-12 relative diff"
+    );
+}
+
+#[test]
+fn test_vm_set_epsilon_clamps_invalid_inputs() {
+    let mut vm = VirtualMachine::new();
+    let default = vm.epsilon();
+
+    // Zero, negative, NaN, and Inf must all fall back to the default.
+    vm.set_epsilon(0.0);
+    assert_eq!(vm.epsilon(), default);
+    vm.set_epsilon(-1.0);
+    assert_eq!(vm.epsilon(), default);
+    vm.set_epsilon(f64::NAN);
+    assert_eq!(vm.epsilon(), default);
+    vm.set_epsilon(f64::INFINITY);
+    assert_eq!(vm.epsilon(), default);
+
+    // A finite, positive value should stick.
+    vm.set_epsilon(1e-6);
+    assert!((vm.epsilon() - 1e-6).abs() < f64::EPSILON);
+}

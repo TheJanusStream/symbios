@@ -221,6 +221,11 @@ impl System {
                         .collect(),
                     expected_arities: rule.expected_arities.clone(),
                     param_names: rule.param_names.clone(),
+                    ignored_symbols: rule.ignored_symbols.as_ref().map(|ids| {
+                        ids.iter()
+                            .map(|s| *symbol_map.get(s).unwrap_or(s))
+                            .collect()
+                    }),
                 };
                 remapped_rules.push(remapped);
             }
@@ -520,6 +525,11 @@ impl System {
                 .collect(),
             expected_arities: rule.expected_arities.clone(),
             param_names: rule.param_names.clone(),
+            ignored_symbols: rule.ignored_symbols.as_ref().map(|ids| {
+                ids.iter()
+                    .map(|s| *symbol_map.get(s).unwrap_or(s))
+                    .collect()
+            }),
         }
     }
 

@@ -357,6 +357,16 @@ fn parse_rule_structure(input: &str) -> IResult<&str, Rule> {
         }
     }
 
+    // Optional postfix per-rule ignore list (issue #95):
+    //   { ignore: + - F }      -> Some(vec!["+","-","F"])
+    //   { ignore: }            -> Some(vec![])  (explicit empty: shadows global)
+    //   (no postfix)           -> None          (inherits global #ignore list)
+    // The `{`/`}` delimiters are chosen because they are not accepted by
+    // `parse_symbol`, so the successor loop breaks cleanly before reaching
+    // them. (Polygon `{ }` modules are not supported as successor symbols
+    // by this parser, so there's no ambiguity here.)
+    let (curr, ignored_symbols) = opt(parse_rule_ignore_postfix).parse(curr)?;
+
     Ok((
         curr,
         Rule {
@@ -367,8 +377,38 @@ fn parse_rule_structure(input: &str) -> IResult<&str, Rule> {
             right_context,
             condition,
             successors,
+            ignored_symbols,
         },
     ))
+}
+
+fn parse_rule_ignore_postfix(input: &str) -> IResult<&str, Vec<String>> {
+    // Soft-detect the opening `{`; once committed, the rest of the postfix
+    // is hard-required. This way a malformed postfix surfaces as a parse
+    // error rather than silently leaving trailing garbage on the rule.
+    let (input, _) = ws(c_char::<&str, Error<&str>>('{')).parse(input)?;
+    let (input, _) = cut(ws(tag("ignore"))).parse(input)?;
+    let (input, _) = cut(ws(c_char::<&str, Error<&str>>(':'))).parse(input)?;
+
+    let mut symbols = Vec::new();
+    let mut curr = input;
+    loop {
+        let (next, _) = space_or_comment(curr)?;
+        if symbols.len() >= MAX_CONTEXT_LENGTH {
+            return Err(nom::Err::Failure(Error::from_error_kind(
+                next,
+                ErrorKind::TooLarge,
+            )));
+        }
+        if let Ok((next, sym)) = parse_symbol(next) {
+            symbols.push(sym);
+            curr = next;
+        } else {
+            break;
+        }
+    }
+    let (curr, _) = cut(ws(c_char::<&str, Error<&str>>('}'))).parse(curr)?;
+    Ok((curr, symbols))
 }
 
 pub fn parse_rule(input: &str) -> IResult<&str, Rule> {

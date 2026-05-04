@@ -20,7 +20,8 @@ All benchmarks run on the standard test suite using Criterion.rs.
 ### Exponential Growth (Algae)
 
 **Test:** Classic L-System doubling pattern
-```
+
+```text
 A → A B
 B → A
 Axiom: A
@@ -29,11 +30,13 @@ Result: 987 modules (Fibonacci sequence)
 ```
 
 **Performance:**
+
 - **Time:** ~79 µs (microseconds)
 - **Throughput:** ~12,500 derivations/second
 - **Per-module cost:** ~80 ns/module
 
 **What this tests:**
+
 - State allocation and module pushing
 - Symbol matching speed
 - Memory layout efficiency
@@ -41,18 +44,21 @@ Result: 987 modules (Fibonacci sequence)
 ### Context-Sensitive Matching
 
 **Test:** Signal propagation with left/right context
-```
+
+```text
 A(x) < B(y) > C(z) → B(x+y+z)
 Axiom: [A(1) B(1) C(1)] × 1000 = 3,000 modules
 Depth: 1 step
 ```
 
 **Performance:**
+
 - **Time:** ~169 µs (microseconds)
 - **Throughput:** ~17.7 million modules/second (3000 modules / 169µs)
 - **Per-module cost:** ~56 ns/module
 
 **What this tests:**
+
 - Context matching algorithm with topology skip-links
 - Parameter access speed (SoA layout)
 - VM expression evaluation overhead
@@ -60,10 +66,10 @@ Depth: 1 step
 
 ### Benchmark Summary
 
-| Operation | Time | Modules | ns/module |
-|-----------|------|---------|-----------|
-| Algae Growth (15 steps) | 79 µs | 987 | 80 |
-| Context Matching (1 step) | 169 µs | 3,000 | 56 |
+| Operation                 | Time   | Modules | ns/module |
+| ------------------------- | ------ | ------- | --------- |
+| Algae Growth (15 steps)   | 79 µs  | 987     | 80        |
+| Context Matching (1 step) | 169 µs | 3,000   | 56        |
 
 ---
 
@@ -72,7 +78,7 @@ Depth: 1 step
 ### Algorithmic Complexity
 
 | Operation | Time Complexity | Space Complexity | Notes |
-|-----------|----------------|------------------|-------|
+| --------- | --------------- | ---------------- | ----- |
 | Add rule | O(P) | O(P) | P = rule string length |
 | Set axiom | O(A) | O(A) | A = axiom string length |
 | Derive (N steps) | O(N × M × R) | O(M) | M = modules, R = rules per symbol |
@@ -86,27 +92,33 @@ Depth: 1 step
 ### Memory Layout Efficiency
 
 **Per-Module Overhead:**
+
 ```rust
 // ModuleData size: 24 bytes (with alignment padding for f64)
 // Enforced by compile-time assertion in src/core/mod.rs.
 struct ModuleData {
-    symbol: u16,        // 2 bytes
-    birth_time: f64,    // 8 bytes (requires 8-byte alignment)
-    param_start: u32,   // 4 bytes
-    param_len: u16,     // 2 bytes
-    topology_link: u32, // 4 bytes
+    symbol: u16,                     // 2 bytes
+    birth_time: f64,                 // 8 bytes (requires 8-byte alignment)
+    param_start: u32,                // 4 bytes
+    param_len: u16,                  // 2 bytes
+    topology_links: [u32; 2],        // 8 bytes (one slot per PairKind)
 }
-// Raw sum: 20 bytes. Struct alignment (8) pads to 24 bytes.
+// Raw sum: 24 bytes. The pair-kind array reuses the alignment padding the
+// previous single-link layout already paid for, so the struct stays at 24.
 ```
+
+**Topology link slots:** Two `u32` slots per module — see `PairKind::Branch` (`[ ]`) and `PairKind::Polygon` (`{ }`) in `src/core/mod.rs`. A module can hold an independent skip target for each kind without overwrites; only the slot whose pair-kind matches the module's symbol is meaningful in practice.
 
 **Parameters:** 8 bytes per parameter (f64)
 
 **Example:** Module `A(1.0, 2.0, 3.0)` costs:
+
 - ModuleData: 24 bytes
 - Parameters: 3 × 8 = 24 bytes
 - **Total: 48 bytes**
 
 Compare to naive approach:
+
 ```rust
 struct NaiveModule {
     symbol: String,        // 24 bytes (ptr + len + cap)
@@ -150,11 +162,13 @@ sys.add_rule("A(x) : x >= 5 -> C(x)")?;
 Complex expressions are compiled once but evaluated on every match.
 
 **Slow:**
+
 ```rust
 sys.add_rule("A(x) -> B(sin(x) + cos(x) + tan(x))")?;
 ```
 
 **Fast:**
+
 ```rust
 // Precompute if x is constant across derivations
 sys.add_rule("A(x) -> B(x * 1.732)")?;  // Approximation
@@ -165,12 +179,14 @@ sys.add_rule("A(x) -> B(x * 1.732)")?;  // Approximation
 Topology calculation is O(N) but uses a stack. Deep nesting increases overhead.
 
 **Slow:**
-```
+
+```text
 Axiom: A [ [ [ [ B ] ] ] ]  // 4 levels deep
 ```
 
 **Fast:**
-```
+
+```text
 Axiom: A [ B ] [ C ] [ D ]  // 1 level, parallel branches
 ```
 
@@ -188,6 +204,7 @@ sys.add_rule("A -> [ +(ANGLE) B ] [ -(ANGLE) C ]")?;
 ### 6. Batch Derivations
 
 Instead of:
+
 ```rust
 for i in 0..100 {
     sys.derive(1)?;
@@ -196,6 +213,7 @@ for i in 0..100 {
 ```
 
 Do:
+
 ```rust
 sys.derive(100)?;
 // Process final state
@@ -227,14 +245,14 @@ Output will be in `target/criterion/`.
 
 The benchmark suite (`benches/bench_main.rs`) covers six groups:
 
-| Group | What it Measures |
-|-------|------------------|
-| `Derivation` | Core derive loop: allocation, matching, state push |
-| `Context Matching` | Skip-link navigation, parameter loading, VM eval |
-| `Genetic/Mutation` | Probability and constant perturbation (10-100 rules) |
-| `Genetic/Crossover` | Uniform crossover with constant blending (10-50 rules) |
-| `Genetic/StructuralMutation` | Module insert/delete/swap, bytecode perturbation |
-| `Genetic/CombinedEvolution` | Full cycle: crossover + mutation + structural mutation |
+| Group                        | What it Measures                                       |
+| ---------------------------- | ------------------------------------------------------ |
+| `Derivation`                 | Core derive loop: allocation, matching, state push     |
+| `Context Matching`           | Skip-link navigation, parameter loading, VM eval       |
+| `Genetic/Mutation`           | Probability and constant perturbation (10-100 rules)   |
+| `Genetic/Crossover`          | Uniform crossover with constant blending (10-50 rules) |
+| `Genetic/StructuralMutation` | Module insert/delete/swap, bytecode perturbation       |
+| `Genetic/CombinedEvolution`  | Full cycle: crossover + mutation + structural mutation |
 
 ### Custom Benchmarks
 
@@ -275,6 +293,7 @@ cargo flamegraph --bench bench_main
 ### 1. State Export
 
 **Problem:**
+
 ```rust
 let output = sys.state.display(&sys.interner).to_string();  // Slow for large states
 ```
@@ -286,6 +305,7 @@ let output = sys.state.display(&sys.interner).to_string();  // Slow for large st
 ### 2. Topology Calculation
 
 **Problem:**
+
 ```rust
 sys.derive(1)?;  // Recalculates topology each step if brackets are present
 ```
@@ -297,6 +317,7 @@ sys.derive(1)?;  // Recalculates topology each step if brackets are present
 ### 3. Rule Compilation
 
 **Problem:**
+
 ```rust
 for _ in 0..1000 {
     sys.add_rule("A(x) -> B(x + sin(x))")?;  // Repeated compilation
@@ -310,6 +331,7 @@ for _ in 0..1000 {
 ### 4. Excessive Derivations
 
 **Problem:**
+
 ```rust
 sys.derive(100)?;  // Exponential growth
 // State explodes to millions of modules
@@ -318,6 +340,7 @@ sys.derive(100)?;  // Exponential growth
 **Why:** L-Systems can grow exponentially (e.g., `A → AA` doubles every step).
 
 **Solution:**
+
 - Set `sys.max_capacity` to catch runaway growth
 - Monitor `sys.state.len()` between derivations
 - Use pruning rules to limit growth
@@ -340,20 +363,20 @@ sys.add_rule("A(x) : x < 100 -> A(x + 1)")?;  // Growth limit
 
 ### Relative Cost
 
-| Operator | Relative Cost | Scales With |
-|----------|--------------|-------------|
-| Probability mutation | Very low | Number of rules |
-| Constant mutation | Very low | Number of constants |
-| Gaussian jitter | Low | Total bytecode instructions |
-| Operator flip | Low | Total bytecode instructions |
-| Structural mutation | Medium | Rules × successors per rule |
-| Rule duplication | Medium | Number of rules |
-| Topological mutation | Low | Number of successor symbols |
-| Literal promotion | Medium | Bytecode instructions × constants |
-| Crossover (uniform) | Medium | Total rules across parents |
-| Crossover (homologous) | Medium | Shared predecessor symbols |
-| BLX-alpha blending | Medium | Shared rule pairs with matching structure |
-| Sub-expression grafting | Medium | Successor sequence length |
+| Operator                | Relative Cost | Scales With                               |
+| ----------------------- | ------------- | ----------------------------------------- |
+| Probability mutation    | Very low      | Number of rules                           |
+| Constant mutation       | Very low      | Number of constants                       |
+| Gaussian jitter         | Low           | Total bytecode instructions               |
+| Operator flip           | Low           | Total bytecode instructions               |
+| Structural mutation     | Medium        | Rules × successors per rule               |
+| Rule duplication        | Medium        | Number of rules                           |
+| Topological mutation    | Low           | Number of successor symbols               |
+| Literal promotion       | Medium        | Bytecode instructions × constants         |
+| Crossover (uniform)     | Medium        | Total rules across parents                |
+| Crossover (homologous)  | Medium        | Shared predecessor symbols                |
+| BLX-alpha blending      | Medium        | Shared rule pairs with matching structure |
+| Sub-expression grafting | Medium        | Successor sequence length                 |
 
 ### Evolutionary Loop Pattern
 
@@ -402,12 +425,12 @@ Before deploying Symbios in production, verify:
 
 Based on benchmarks and real-world usage:
 
-| Use Case | Modules | Derivations/sec | Notes |
-|----------|---------|-----------------|-------|
-| Small (< 100 modules) | 10-100 | 100,000+ | Interactive rates |
-| Medium (1K modules) | 1,000 | 10,000+ | Real-time generation |
-| Large (10K modules) | 10,000 | 1,000+ | Batch processing |
-| Huge (100K+ modules) | 100,000+ | 100+ | Precompute offline |
+| Use Case              | Modules  | Derivations/sec | Notes                |
+|-----------------------|----------|-----------------|----------------------|
+| Small (< 100 modules) | 10-100   | 100,000+        | Interactive rates    |
+| Medium (1K modules)   | 1,000    | 10,000+         | Real-time generation |
+| Large (10K modules)   | 10,000   | 1,000+          | Batch processing     |
+| Huge (100K+ modules)  | 100,000+ | 100+            | Precompute offline   |
 
 **Hardware:** Apple M1/M2, AMD Ryzen 5000+, Intel i5/i7 (modern CPUs).
 

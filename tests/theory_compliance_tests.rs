@@ -1,8 +1,8 @@
-use symbios::SymbiosState;
 use symbios::parser::{
     ast::{Directive, Expr},
     parse_directive, parse_expr, parse_module, parse_rule,
 };
+use symbios::{PairKind, SymbiosState};
 
 #[test]
 fn test_il_system_context_words() {
@@ -31,15 +31,71 @@ fn test_simultaneous_topology_pairs() {
     state.push(p_close, 0.0, &[]).unwrap(); // 2: }
     state.push(b_close, 0.0, &[]).unwrap(); // 3: ]
 
+    // Issue #90: each pair kind owns an independent slot per module.
+    // Branch links land in PairKind::Branch (the 2-arg shorthand), polygon
+    // links land in PairKind::Polygon, and neither call erases the other.
     state.calculate_topology(b_open, b_close).unwrap();
-    state.calculate_topology(p_open, p_close).unwrap();
+    state
+        .calculate_topology_kind(p_open, p_close, PairKind::Polygon)
+        .unwrap();
 
-    // Check that polygon pass did not erase the branch indices
+    // Branch slot: bracket modules linked, polygon modules empty.
     assert_eq!(state.get_view(0).unwrap().skip_idx, Some(3));
     assert_eq!(state.get_view(3).unwrap().skip_idx, Some(0));
+    assert_eq!(
+        state.get_view(1).unwrap().skip_idx,
+        None,
+        "polygon-open module must not have a branch-kind link"
+    );
+    assert_eq!(
+        state.get_view(2).unwrap().skip_idx,
+        None,
+        "polygon-close module must not have a branch-kind link"
+    );
 
-    // Check new polygon links
-    assert_eq!(state.get_view(1).unwrap().skip_idx, Some(2));
+    // Polygon slot: polygon modules linked, bracket modules empty.
+    assert_eq!(state.get_view(1).unwrap().polygon_skip_idx, Some(2));
+    assert_eq!(state.get_view(2).unwrap().polygon_skip_idx, Some(1));
+    assert_eq!(state.get_view(0).unwrap().polygon_skip_idx, None);
+    assert_eq!(state.get_view(3).unwrap().polygon_skip_idx, None);
+
+    // skip_idx_for(kind) is the canonical accessor.
+    let v0 = state.get_view(0).unwrap();
+    assert_eq!(v0.skip_idx_for(PairKind::Branch), Some(3));
+    assert_eq!(v0.skip_idx_for(PairKind::Polygon), None);
+    let v1 = state.get_view(1).unwrap();
+    assert_eq!(v1.skip_idx_for(PairKind::Branch), None);
+    assert_eq!(v1.skip_idx_for(PairKind::Polygon), Some(2));
+}
+
+#[test]
+fn test_topology_kind_independence_under_recompute() {
+    // Recomputing one kind must not stomp on links of the other kind.
+    let mut state = SymbiosState::new();
+    let (b_open, b_close) = (1, 2);
+    let (p_open, p_close) = (3, 4);
+
+    state.push(b_open, 0.0, &[]).unwrap();
+    state.push(p_open, 0.0, &[]).unwrap();
+    state.push(p_close, 0.0, &[]).unwrap();
+    state.push(b_close, 0.0, &[]).unwrap();
+
+    state
+        .calculate_topology_kind(b_open, b_close, PairKind::Branch)
+        .unwrap();
+    state
+        .calculate_topology_kind(p_open, p_close, PairKind::Polygon)
+        .unwrap();
+
+    // Recompute Branch a second time — Polygon links must survive.
+    state
+        .calculate_topology_kind(b_open, b_close, PairKind::Branch)
+        .unwrap();
+
+    assert_eq!(state.get_view(1).unwrap().polygon_skip_idx, Some(2));
+    assert_eq!(state.get_view(2).unwrap().polygon_skip_idx, Some(1));
+    assert_eq!(state.get_view(0).unwrap().skip_idx, Some(3));
+    assert_eq!(state.get_view(3).unwrap().skip_idx, Some(0));
 }
 
 #[test]

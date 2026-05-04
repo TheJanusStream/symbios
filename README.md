@@ -8,12 +8,12 @@ It fully implements the syntax and semantics described in *The Algorithmic Beaut
 
 ## Key Features
 
-*   **Structure-of-Arrays (SoA)**: Data layout optimized for cache locality and WASM memory limits.
-*   **Parametric & Context-Sensitive**: Full support for `(k,l)-systems`, arithmetic guards `A(x) : x > 5 -> ...`, and variable binding.
-*   **Genetic Algorithm Toolkit**: 9 mutation operators, 4 crossover strategies, and lossless source round-tripping for evolutionary optimization.
-*   **Adversarial Hardening**: Protected against recursion bombs, memory exhaustion, and floating-point fragility.
-*   **Deterministic**: Seedable RNG (`rand_pcg`) ensures reproducible procedural generation.
-*   **Zero `unsafe` Code**: All safety via Rust's type system and explicit bounds checks.
+* **Structure-of-Arrays (SoA)**: Data layout optimized for cache locality and WASM memory limits.
+* **Parametric & Context-Sensitive**: Full support for `(k,l)-systems`, arithmetic guards `A(x) : x > 5 -> ...`, and variable binding.
+* **Genetic Algorithm Toolkit**: 9 mutation operators, 4 crossover strategies, and lossless source round-tripping for evolutionary optimization.
+* **Adversarial Hardening**: Protected against recursion bombs, memory exhaustion, and floating-point fragility.
+* **Deterministic**: Seedable RNG (`rand_pcg`) ensures reproducible procedural generation.
+* **Zero `unsafe` Code**: All safety via Rust's type system and explicit bounds checks.
 
 ## Usage
 
@@ -244,6 +244,12 @@ sys.add_directive("#define GROWTH_RATE 1.2")?;
 
 // Ignore: symbols to skip during context matching
 sys.add_directive("#ignore: F f +")?;
+
+// Per-rule override (issue #95): a rule can supply its own ignore list
+// with a `{ ignore: ... }` postfix. The per-rule list fully replaces the
+// global list for that rule only. Use an empty list to disable ignoring.
+sys.add_rule("A < B > C -> X { ignore: + - }")?;  // shadow with custom list
+sys.add_rule("A < B > C -> Y { ignore: }")?;       // shadow with empty list
 ```
 
 ## Stochastic Rules
@@ -278,24 +284,26 @@ sys.derive(1)?;
 ## Performance
 
 Symbios uses a flat memory arena for parameters and `u16` symbol interning.
-*   **Rule Matching**: $O(N)$ (HashMap bucketed)
-*   **Context Matching**: $O(1)$ (Topology Skip-Links)
+
+* **Rule Matching**: $O(N)$ (HashMap bucketed)
+* **Context Matching**: $O(1)$ (Topology Skip-Links)
 
 See [PERFORMANCE.md](PERFORMANCE.md) for detailed benchmarks and optimization tips.
 
 ## Documentation
 
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** - System design, SoA layout, VM architecture, and design decisions
-- **[PERFORMANCE.md](PERFORMANCE.md)** - Benchmark results, optimization tips, and profiling guide
-- **[TROUBLESHOOTING.md](TROUBLESHOOTING.md)** - Common errors, solutions, and debugging patterns
+* **[ARCHITECTURE.md](ARCHITECTURE.md)** - System design, SoA layout, VM architecture, and design decisions
+* **[PERFORMANCE.md](PERFORMANCE.md)** - Benchmark results, optimization tips, and profiling guide
+* **[TROUBLESHOOTING.md](TROUBLESHOOTING.md)** - Common errors, solutions, and debugging patterns
 
 ## Examples
 
 See [examples/](examples/) for complete working examples:
-- [anabaena.rs](examples/anabaena.rs) - Simple discrete L-System from ABOP
-- [monopodial_tree.rs](examples/monopodial_tree.rs) - Complex tree with branches and constants
-- [stochastic_decay.rs](examples/stochastic_decay.rs) - Stochastic rule demonstration
-- [adaptive_plant.rs](examples/adaptive_plant.rs) - Advanced example with age, context, and environment
+
+* [anabaena.rs](examples/anabaena.rs) - Simple discrete L-System from ABOP
+* [monopodial_tree.rs](examples/monopodial_tree.rs) - Complex tree with branches and constants
+* [stochastic_decay.rs](examples/stochastic_decay.rs) - Stochastic rule demonstration
+* [adaptive_plant.rs](examples/adaptive_plant.rs) - Advanced example with age, context, and environment
 
 ## License
 

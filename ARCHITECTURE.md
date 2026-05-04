@@ -21,7 +21,7 @@ This document explains the design decisions and architectural patterns used in S
 
 Symbios is organized into four core modules, with the `system` module further split into focused submodules:
 
-```
+```text
 src/
 ├── core/              # State management and data structures
 │   ├── mod.rs         # SymbiosState with SoA layout
@@ -46,7 +46,7 @@ src/
 
 ### Data Flow
 
-```
+```text
 Rule String → Parser → AST → Compiler → Bytecode → VM → f64 result
     ↓
 Axiom String → Parser → Interned Symbols + Parameters → State
@@ -167,7 +167,7 @@ pub enum MathOp {
 
 #### Example Compilation
 
-```
+```text
 Expression:  x + 2 * sin(y)
 Bytecode:    LoadParam(0)  // x
              Push(2.0)
@@ -180,15 +180,18 @@ Stack trace: [x] → [x, 2.0] → [x, 2.0, y] → [x, 2.0, sin(y)] → [x, 2.0*s
 
 ### Why a VM?
 
-**Alternative 1: Interpret AST directly**
+#### Alternative 1: Interpret AST directly
+
 - Problem: Tree traversal overhead on every derivation step
 - Overhead: Pointer chasing, dynamic dispatch, repeated allocations
 
-**Alternative 2: Code generation**
+#### Alternative 2: Code generation
+
 - Problem: Requires JIT compilation or unsafe FFI
 - Not viable for WASM or embedded targets
 
-**VM Approach:**
+#### VM Approach
+
 - Compile once, execute many times
 - Bytecode is compact (`Vec<Op>`, enum-based)
 - Stack operations are cache-friendly
@@ -224,12 +227,13 @@ pub struct SymbolTable {
 ```
 
 **Usage:**
+
 ```rust
 let id = interner.get_or_intern("A")?;  // Returns u16
 let name = interner.resolve(id)?;       // Returns &str
 ```
 
-### Benefits
+### Outcome
 
 1. **Memory**: Each module stores only 2 bytes (u16) instead of 24+ bytes (String)
 2. **Comparison**: Symbol equality is integer comparison (O(1))
@@ -249,7 +253,7 @@ let name = interner.resolve(id)?;       // Returns &str
 
 L-Systems support context-sensitive rules like:
 
-```
+```text
 B < A(x) > C : condition -> successor
 ```
 
@@ -259,7 +263,7 @@ This means "match A only when preceded by B and followed by C".
 
 In branching structures, context can span branches:
 
-```
+```text
 String: X [ Y A ] Z
 Rule:   Y < A > Z
 ```
@@ -269,18 +273,28 @@ The predecessor `A` is inside a branch `[]`, but its right context `Z` is outsid
 ### Skip-Link Solution
 
 Symbios pre-calculates **topology links** that map:
+
 - Open bracket `[` → matching close bracket `]`
 - Close bracket `]` → matching open bracket `[`
 
 **Algorithm:**
+
 1. Scan the string once
 2. Use a stack to match bracket pairs
-3. Store forward/backward indices in `topology_link: u32`
+3. Store forward/backward indices in `topology_links: [u32; NUM_TOPOLOGY_KINDS]`
+
+**Per-kind isolation.** Each module reserves one link slot per `PairKind`
+variant (currently `Branch` for `[ ]` and `Polygon` for `{ }`). Calling
+`calculate_topology_kind(open, close, PairKind::Polygon)` writes into the
+polygon slot only, so it does not erase prior branch links — and vice versa.
+The 2-arg `calculate_topology(open, close)` is a `PairKind::Branch` shorthand
+preserved for back-compat.
 
 **Result:** O(1) navigation to skip entire branches during context matching.
 
 **Example:**
-```
+
+```text
 String:     X [ Y A ] Z
 Indices:    0 1 2 3 4 5
 Links:      - 1→4 - - 4→1 -
@@ -289,6 +303,22 @@ Links:      - 1→4 - - 4→1 -
 ### Interaction with `#ignore`
 
 Topology skip-links take precedence over `#ignore` for bracket symbols. Even if `[` and `]` appear in an `#ignore` directive, they are still used for branch navigation during context matching. The `#ignore` only suppresses them as context match targets.
+
+### Per-rule `#ignore` override (issue #95)
+
+Individual rules can shadow the global `#ignore` directive with a postfix
+modifier:
+
+```text
+A < B > C -> X { ignore: + - }   // per-rule list replaces global
+A < B > C -> Y { ignore: }       // empty list = nothing ignored for this rule
+A < B > C -> Z                   // no postfix = inherit the global list
+```
+
+The per-rule list fully replaces the global list for matching purposes — it
+is not additive. Symbols are interned via the same path as the global
+directive. The postfix is round-tripped by `export_rule_to_string`, so a
+parse → export cycle preserves the per-rule list verbatim.
 
 ---
 
@@ -341,7 +371,7 @@ for each module in state {
 
 The decompiler reconstructs ASTs from bytecode, and the exporter formats them back to source text:
 
-```
+```text
 Vec<Op> → Decompiler → Expr AST → format_expr() → String
 RuntimeRule → export_rule() → Rule AST → format_rule() → Source text
 ```
@@ -386,26 +416,26 @@ When a context-sensitive rule matches, parameters from context modules are loade
 
 Symbios provides 9 mutation operators, organized by granularity:
 
-| Operator | Config | Targets |
-|----------|--------|---------|
-| **Probability mutation** | `MutationConfig` | Rule probability weights |
-| **Constant mutation** | `MutationConfig` | `#define` constant values |
-| **Gaussian jitter** | `MutationConfig` | `Push(f64)` bytecode literals |
-| **Structural mutation** | `StructuralMutationConfig` | Successor module sequence |
-| **Operator flip** | `OperatorFlipConfig` | Arithmetic/relational ops |
-| **Rule duplication** | `RuleDuplicationConfig` | Clone + specialize rules |
-| **Topological mutation** | `TopologicalMutationConfig` | Turtle command pairs |
-| **Literal promotion** | `LiteralPromotionConfig` | Promote literals to constants |
-| **Sub-expression graft** | `graft_rate: f64` | Branch blocks between systems |
+| Operator                 | Config                      | Targets                       |
+|--------------------------|-----------------------------|-------------------------------|
+| **Probability mutation** | `MutationConfig`            | Rule probability weights      |
+| **Constant mutation**    | `MutationConfig`            | `#define` constant values     |
+| **Gaussian jitter**      | `MutationConfig`            | `Push(f64)` bytecode literals |
+| **Structural mutation**  | `StructuralMutationConfig`  | Successor module sequence     |
+| **Operator flip**        | `OperatorFlipConfig`        | Arithmetic/relational ops     |
+| **Rule duplication**     | `RuleDuplicationConfig`     | Clone + specialize rules      |
+| **Topological mutation** | `TopologicalMutationConfig` | Turtle command pairs          |
+| **Literal promotion**    | `LiteralPromotionConfig`    | Promote literals to constants |
+| **Sub-expression graft** | `graft_rate: f64`           | Branch blocks between systems |
 
 ### Crossover Strategies
 
-| Strategy | Config | Behavior |
-|----------|--------|----------|
-| **Uniform** | `CrossoverConfig` | Select entire rule sets per predecessor |
-| **Homologous** | `AdvancedCrossoverConfig` | Select individual rules per shared predecessor |
-| **BLX-alpha** | `AdvancedCrossoverConfig` | Interpolate bytecode literals between parents |
-| **Sub-expression grafting** | `graft_rate: f64` | Swap balanced `[...]` branch blocks |
+| Strategy                    | Config                    | Behavior                                       |
+|-----------------------------|---------------------------|------------------------------------------------|
+| **Uniform**                 | `CrossoverConfig`         | Select entire rule sets per predecessor        |
+| **Homologous**              | `AdvancedCrossoverConfig` | Select individual rules per shared predecessor |
+| **BLX-alpha**               | `AdvancedCrossoverConfig` | Interpolate bytecode literals between parents  |
+| **Sub-expression grafting** | `graft_rate: f64`         | Swap balanced `[...]` branch blocks            |
 
 ### Arity Safety
 
@@ -449,6 +479,7 @@ pub struct SourceGenotype {
 ```
 
 Each mutation/crossover call:
+
 1. Parses `self.source` into a `System`
 2. Applies the genetic operator
 3. Calls `to_source()` to reconstruct source text
@@ -464,16 +495,16 @@ This enables evolutionary loops that operate entirely in source space while leve
 
 Symbios is designed to reject adversarial input that could cause resource exhaustion.
 
-| Limit | Value | Error |
-|-------|-------|-------|
-| Max recursion depth (parser) | 64 | `ParseError` |
-| Max identifier length | 64 chars | `ParseError` |
-| Max function arguments | 32 | `ParseError` |
-| Max successor count | 128 | `CompileError::TooManySuccessors` |
-| Max nesting depth (topology) | 4,096 | `SymbiosError::MaxNestingExceeded` |
-| VM stack size | 256 | `VMError::StackOverflow` |
-| State capacity | 1,000,000 modules | `SymbiosError::CapacityOverflow` |
-| Interner heap | 10 MB | Interner error |
+| Limit                        | Value                  | Error                              |
+|------------------------------|------------------------|------------------------------------|
+| Max recursion depth (parser) | 64                     | `ParseError`                       |
+| Max identifier length        | 64 chars               | `ParseError`                       |
+| Max function arguments       | 32                     | `ParseError`                       |
+| Max successor count          | 128                    | `CompileError::TooManySuccessors`  |
+| Max nesting depth (topology) | 4,096                  | `SymbiosError::MaxNestingExceeded` |
+| VM stack size                | 256                    | `VMError::StackOverflow`           |
+| State capacity               | 1,000,000 modules      | `SymbiosError::CapacityOverflow`   |
+| Interner heap                | 10 MB                  | Interner error                     |
 
 ### Numeric Safety
 
@@ -493,6 +524,7 @@ Symbios is designed to reject adversarial input that could cause resource exhaus
 ### Zero Unsafe Code
 
 Symbios contains **zero `unsafe` blocks**. All safety is achieved through:
+
 - Rust's type system
 - Explicit bounds checks
 - Result-based error handling
@@ -502,7 +534,7 @@ Symbios contains **zero `unsafe` blocks**. All safety is achieved through:
 
 ## Error Hierarchy
 
-```
+```text
 SystemError (top-level)
 ├── ParseError(String)              # Syntax errors from nom parser
 ├── CompileError(String)            # Variable resolution, successor limits
@@ -524,17 +556,17 @@ SystemError (top-level)
 
 ## Performance Characteristics
 
-| Operation | Complexity | Notes |
-|-----------|-----------|-------|
-| Rule matching | O(N × R) | N = modules, R = rules per symbol |
-| Context matching | O(1) per context | Via skip-links |
-| Parameter access | O(1) | Direct indexing into flat array |
-| Symbol comparison | O(1) | Integer equality |
-| VM execution | O(I) | I = instruction count |
-| Topology calculation | O(N) | Single scan with stack |
-| Stochastic selection | O(R) | Linear scan of matching rules |
-| Mutation (all types) | O(R × S) | R = rules, S = successors per rule |
-| Crossover | O(R) | R = total rules across both parents |
+| Operation            | Complexity       | Notes                               |
+|----------------------|------------------|-------------------------------------|
+| Rule matching        | O(N × R)         | N = modules, R = rules per symbol   |
+| Context matching     | O(1) per context | Via skip-links                      |
+| Parameter access     | O(1)             | Direct indexing into flat array     |
+| Symbol comparison    | O(1)             | Integer equality                    |
+| VM execution         | O(I)             | I = instruction count               |
+| Topology calculation | O(N)             | Single scan with stack              |
+| Stochastic selection | O(R)             | Linear scan of matching rules       |
+| Mutation (all types) | O(R × S)         | R = rules, S = successors per rule  |
+| Crossover            | O(R)             | R = total rules across both parents |
 
 ---
 
