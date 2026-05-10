@@ -126,10 +126,12 @@ impl System {
     pub fn to_source(&self) -> String {
         let mut result = String::new();
 
-        // Emit preamble lines (comments, #ignore — but NOT #define, which we regenerate)
+        // Emit preamble lines (comments only — #define and #ignore are
+        // regenerated from authoritative state below so crossover/mutation
+        // edits aren't silently dropped).
         for line in &self.preamble {
             let trimmed = line.trim();
-            if trimmed.starts_with("#define") {
+            if trimmed.starts_with("#define") || trimmed.starts_with("#ignore") {
                 continue;
             }
             result.push_str(line);
@@ -141,6 +143,19 @@ impl System {
         constants.sort_by_key(|(k, _)| *k);
         for (name, value) in constants {
             result.push_str(&format!("#define {} {}\n", name, value));
+        }
+
+        // Emit #ignore from current ignored_symbols so crossover-merged and
+        // programmatically-added directives survive round-trip.
+        if !self.ignored_symbols.is_empty() {
+            result.push_str("#ignore:");
+            for &id in &self.ignored_symbols {
+                if let Some(name) = self.interner.resolve(id) {
+                    result.push(' ');
+                    result.push_str(name);
+                }
+            }
+            result.push('\n');
         }
 
         // Emit axiom line
@@ -390,17 +405,16 @@ pub fn export_rule(
         right_context.push(ModuleSym { symbol, params });
     }
 
-    // Decompile condition
-    let mut condition = if let Some(cond_bytecode) = &rule.condition {
+    // Decompile condition. We deliberately do NOT overwrite a numeric
+    // condition with `rule.probability`: a dormant rule (numeric-zero
+    // condition) must round-trip as dormant. The Display impl for `Rule`
+    // already emits the probability prefix when condition != probability,
+    // so divergent values stay divergent on re-parse.
+    let condition = if let Some(cond_bytecode) = &rule.condition {
         Some(decompile_with_params(cond_bytecode, &param_map)?)
     } else {
         None
     };
-
-    // Sync numeric condition with probability for consistent export
-    if let Some(Expr::Number(_)) = condition {
-        condition = Some(Expr::Number(rule.probability));
-    }
 
     // Export successors
     let mut successors = Vec::new();

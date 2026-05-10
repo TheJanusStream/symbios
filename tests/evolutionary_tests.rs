@@ -1790,3 +1790,58 @@ fn test_structural_mutation_respects_context_arity() {
         );
     }
 }
+
+/// Bug 2: subexpression_graft used to copy raw `RuntimeModule`s from parent B
+/// into the offspring's rules without remapping their symbol IDs through the
+/// other -> offspring translation table. When the same symbol had different
+/// interner IDs in the two parents (the common case), the inserted modules
+/// would silently reference the wrong symbols in the offspring's namespace.
+#[test]
+fn test_subexpression_graft_remaps_donor_symbol_ids() {
+    use rand::SeedableRng;
+    use rand_pcg::Pcg64;
+
+    // Force divergent IDs: parent A interns extra symbols before `[`,
+    // shifting its bracket ID to 4. Parent B introduces `[` early so it
+    // gets ID 1 in B's interner. With unmapped IDs, donor-branch modules
+    // would land on the wrong symbols in the offspring.
+    let mut parent_a = System::new();
+    parent_a.add_rule("A -> X Y Z [ + F ] F").unwrap();
+    parent_a.set_axiom("A").unwrap();
+
+    let mut parent_b = System::new();
+    parent_b.add_rule("A -> [ - F ]").unwrap();
+    parent_b.set_axiom("A").unwrap();
+
+    // Sanity: confirm IDs really do differ between parents.
+    assert_ne!(
+        parent_a.interner.resolve_id("[").unwrap(),
+        parent_b.interner.resolve_id("[").unwrap(),
+        "Test setup invariant: parents must have divergent `[` IDs"
+    );
+
+    let mut rng = Pcg64::seed_from_u64(42);
+    let offspring = parent_a
+        .subexpression_graft_with_rng(&parent_b, &mut rng, 1.0)
+        .unwrap();
+
+    // Every successor symbol referenced by the offspring's rules must be
+    // resolvable through the offspring's own interner. An unmapped donor
+    // ID would point at a slot that doesn't exist (or resolves to a wrong
+    // name), breaking export and derivation.
+    for rules in offspring.rules.values() {
+        for rule in rules {
+            for module in &rule.successors {
+                assert!(
+                    offspring.interner.resolve(module.symbol).is_some(),
+                    "Grafted successor symbol {} is unresolvable in offspring \
+                     interner — donor ID was not remapped",
+                    module.symbol
+                );
+            }
+        }
+    }
+
+    // End-to-end: offspring must still round-trip and derive without panicking.
+    let _exported = offspring.to_source();
+}

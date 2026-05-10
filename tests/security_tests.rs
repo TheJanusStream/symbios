@@ -92,6 +92,51 @@ fn test_deep_ast_iterative_drop() {
 }
 
 #[test]
+fn test_deep_ast_iterative_clone_compile_format() {
+    // Adversarial parser input — `1 + 1 + ... + 1` parses iteratively into a
+    // 20,000-deep left-nested Add chain. Clone, compilation and Display all
+    // used to recurse along the spine and stack-overflow. They must now
+    // run iteratively.
+    let mut expr = Expr::Number(1.0);
+    for _ in 0..20_000 {
+        expr = Expr::Add(Box::new(expr), Box::new(Expr::Number(1.0)));
+    }
+
+    // Clone must not overflow.
+    let cloned = expr.clone();
+
+    // Display (compiler-bound surface used by to_source) must not overflow.
+    let _rendered = cloned.to_string();
+
+    // Compilation to bytecode must not overflow either.
+    use std::collections::HashMap;
+    use symbios::vm::Compiler;
+    let constants: HashMap<String, f64> = HashMap::new();
+    let mut compiler = Compiler::new(vec![], &constants);
+    let ops = compiler.compile(&cloned).expect("compile should succeed");
+    // Each Add contributes 1 op; plus 20_001 Push ops for the literals.
+    assert_eq!(ops.len(), 40_001);
+}
+
+#[test]
+fn test_power_right_assoc_round_trip() {
+    // (a ^ b) ^ c must keep its parens, otherwise it re-parses as a^(b^c).
+    let expr = Expr::Pow(
+        Box::new(Expr::Pow(
+            Box::new(Expr::Variable("a".into())),
+            Box::new(Expr::Variable("b".into())),
+        )),
+        Box::new(Expr::Variable("c".into())),
+    );
+    let rendered = expr.to_string();
+    assert_eq!(rendered, "(a ^ b) ^ c");
+
+    // Round-trip: re-parse must reconstruct (a^b)^c, not a^(b^c).
+    let (_, parsed) = parse_expr(&rendered).expect("must re-parse");
+    assert_eq!(parsed, expr);
+}
+
+#[test]
 fn test_context_param_shadowing_prevention() {
     let mut sys = System::new();
     // A(x) defines 'x'. B(x) attempts to redefine 'x'.

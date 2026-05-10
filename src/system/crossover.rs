@@ -698,23 +698,51 @@ impl System {
         let config = CrossoverConfig::default();
         let mut offspring = self.crossover_with_rng(other, rng, &config)?;
 
-        // Get bracket symbols
-        let open_sym = offspring.interner.resolve_id("[");
-        let close_sym = offspring.interner.resolve_id("]");
-
-        if open_sym.is_none() || close_sym.is_none() {
+        // Bracket IDs in the offspring namespace (where successors will live).
+        let offspring_open = offspring.interner.resolve_id("[");
+        let offspring_close = offspring.interner.resolve_id("]");
+        if offspring_open.is_none() || offspring_close.is_none() {
             return Ok(offspring);
         }
+        let offspring_open = offspring_open.unwrap();
+        let offspring_close = offspring_close.unwrap();
 
-        let open = open_sym.unwrap();
-        let close = close_sym.unwrap();
+        // Bracket IDs in `other`'s native namespace — required because
+        // `other.rules` carries `other`'s symbol IDs, not the offspring's.
+        let (other_open, other_close) = match (
+            other.interner.resolve_id("["),
+            other.interner.resolve_id("]"),
+        ) {
+            (Some(o), Some(c)) => (o, c),
+            _ => return Ok(offspring),
+        };
 
-        // Extract branch blocks from other parent's rules
+        // Build the other -> offspring symbol map by resolving each name from
+        // other's interner in the offspring's interner. The offspring's
+        // interner is a superset of both parents' (built by crossover_with_rng).
+        let mut symbol_map_other: HashMap<u16, u16> = HashMap::new();
+        for (other_id, name) in other.interner.iter() {
+            if let Some(new_id) = offspring.interner.resolve_id(name) {
+                symbol_map_other.insert(other_id, new_id);
+            }
+        }
+
+        // Extract branch blocks from other parent's rules using other's IDs,
+        // then translate every module's symbol into the offspring namespace.
         let other_branches: Vec<Vec<RuntimeModule>> = other
             .rules
             .values()
             .flat_map(|rules| rules.iter())
-            .flat_map(|rule| Self::extract_branch_blocks(&rule.successors, open, close))
+            .flat_map(|rule| Self::extract_branch_blocks(&rule.successors, other_open, other_close))
+            .map(|block| {
+                block
+                    .into_iter()
+                    .map(|m| RuntimeModule {
+                        symbol: *symbol_map_other.get(&m.symbol).unwrap_or(&m.symbol),
+                        params: m.params,
+                    })
+                    .collect()
+            })
             .collect();
 
         if other_branches.is_empty() {
@@ -727,7 +755,7 @@ impl System {
                 if rng.random::<f64>() < graft_rate && !other_branches.is_empty() {
                     // Find a branch in current rule to replace
                     if let Some((start, end)) =
-                        Self::find_branch_block(&rule.successors, open, close)
+                        Self::find_branch_block(&rule.successors, offspring_open, offspring_close)
                     {
                         // Select a random branch from other parent
                         let donor_idx = rng.random_range(0..other_branches.len());

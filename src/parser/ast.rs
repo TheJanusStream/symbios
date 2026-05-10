@@ -3,7 +3,10 @@
 /// Constructed by the parser and consumed by [`crate::vm::Compiler`] to emit
 /// bytecode. The [`std::fmt::Display`] impl emits source text with proper
 /// parenthesisation for round-tripping.
-#[derive(Debug, PartialEq, Clone)]
+///
+/// `Clone` is implemented iteratively — see the dedicated impl below — so
+/// deeply left-nested ASTs cannot exhaust the call stack.
+#[derive(Debug, PartialEq)]
 pub enum Expr {
     /// A numeric literal.
     Number(f64),
@@ -54,6 +57,215 @@ impl Drop for Expr {
         while let Some(mut expr) = stack.pop() {
             expr.take_children(&mut stack);
         }
+    }
+}
+
+/// Iterative Clone — same motivation as [`Drop`]. A derived `Clone` would
+/// recurse along the spine of a deep AST (the parser builds left-nested
+/// chains like `Add(Add(Add(...), 1), 1)` for `1 + 1 + ...`) and overflow
+/// the stack on adversarial input.
+impl Clone for Expr {
+    fn clone(&self) -> Self {
+        // Two stacks form a postorder traversal: `tasks` holds work to do,
+        // `result` holds finished sub-clones. Each binary node first queues
+        // a Build marker, then visits its children right-to-left so the left
+        // child completes first. When the Build marker is processed, both
+        // children are at the top of `result`.
+        enum Task<'a> {
+            Visit(&'a Expr),
+            BuildNot,
+            BuildNeg,
+            BuildPow,
+            BuildAdd,
+            BuildSub,
+            BuildMul,
+            BuildDiv,
+            BuildGt,
+            BuildLt,
+            BuildGe,
+            BuildLe,
+            BuildEq,
+            BuildNe,
+            BuildAnd,
+            BuildOr,
+            BuildCall(String, usize),
+        }
+
+        let mut tasks: Vec<Task> = vec![Task::Visit(self)];
+        let mut result: Vec<Expr> = Vec::new();
+
+        while let Some(task) = tasks.pop() {
+            match task {
+                Task::Visit(expr) => match expr {
+                    Expr::Number(v) => result.push(Expr::Number(*v)),
+                    Expr::Variable(s) => result.push(Expr::Variable(s.clone())),
+                    Expr::Not(inner) => {
+                        tasks.push(Task::BuildNot);
+                        tasks.push(Task::Visit(inner));
+                    }
+                    Expr::Neg(inner) => {
+                        tasks.push(Task::BuildNeg);
+                        tasks.push(Task::Visit(inner));
+                    }
+                    Expr::Pow(l, r) => {
+                        tasks.push(Task::BuildPow);
+                        tasks.push(Task::Visit(r));
+                        tasks.push(Task::Visit(l));
+                    }
+                    Expr::Add(l, r) => {
+                        tasks.push(Task::BuildAdd);
+                        tasks.push(Task::Visit(r));
+                        tasks.push(Task::Visit(l));
+                    }
+                    Expr::Sub(l, r) => {
+                        tasks.push(Task::BuildSub);
+                        tasks.push(Task::Visit(r));
+                        tasks.push(Task::Visit(l));
+                    }
+                    Expr::Mul(l, r) => {
+                        tasks.push(Task::BuildMul);
+                        tasks.push(Task::Visit(r));
+                        tasks.push(Task::Visit(l));
+                    }
+                    Expr::Div(l, r) => {
+                        tasks.push(Task::BuildDiv);
+                        tasks.push(Task::Visit(r));
+                        tasks.push(Task::Visit(l));
+                    }
+                    Expr::Gt(l, r) => {
+                        tasks.push(Task::BuildGt);
+                        tasks.push(Task::Visit(r));
+                        tasks.push(Task::Visit(l));
+                    }
+                    Expr::Lt(l, r) => {
+                        tasks.push(Task::BuildLt);
+                        tasks.push(Task::Visit(r));
+                        tasks.push(Task::Visit(l));
+                    }
+                    Expr::Ge(l, r) => {
+                        tasks.push(Task::BuildGe);
+                        tasks.push(Task::Visit(r));
+                        tasks.push(Task::Visit(l));
+                    }
+                    Expr::Le(l, r) => {
+                        tasks.push(Task::BuildLe);
+                        tasks.push(Task::Visit(r));
+                        tasks.push(Task::Visit(l));
+                    }
+                    Expr::Eq(l, r) => {
+                        tasks.push(Task::BuildEq);
+                        tasks.push(Task::Visit(r));
+                        tasks.push(Task::Visit(l));
+                    }
+                    Expr::Ne(l, r) => {
+                        tasks.push(Task::BuildNe);
+                        tasks.push(Task::Visit(r));
+                        tasks.push(Task::Visit(l));
+                    }
+                    Expr::And(l, r) => {
+                        tasks.push(Task::BuildAnd);
+                        tasks.push(Task::Visit(r));
+                        tasks.push(Task::Visit(l));
+                    }
+                    Expr::Or(l, r) => {
+                        tasks.push(Task::BuildOr);
+                        tasks.push(Task::Visit(r));
+                        tasks.push(Task::Visit(l));
+                    }
+                    Expr::Call(name, args) => {
+                        tasks.push(Task::BuildCall(name.clone(), args.len()));
+                        for arg in args.iter().rev() {
+                            tasks.push(Task::Visit(arg));
+                        }
+                    }
+                },
+                Task::BuildNot => {
+                    let inner = result.pop().expect("clone: missing operand for Not");
+                    result.push(Expr::Not(Box::new(inner)));
+                }
+                Task::BuildNeg => {
+                    let inner = result.pop().expect("clone: missing operand for Neg");
+                    result.push(Expr::Neg(Box::new(inner)));
+                }
+                // For binary builds, the right operand sits on top because it
+                // was visited last; pop right first, then left.
+                Task::BuildPow => {
+                    let r = result.pop().expect("clone: missing rhs for Pow");
+                    let l = result.pop().expect("clone: missing lhs for Pow");
+                    result.push(Expr::Pow(Box::new(l), Box::new(r)));
+                }
+                Task::BuildAdd => {
+                    let r = result.pop().expect("clone: missing rhs for Add");
+                    let l = result.pop().expect("clone: missing lhs for Add");
+                    result.push(Expr::Add(Box::new(l), Box::new(r)));
+                }
+                Task::BuildSub => {
+                    let r = result.pop().expect("clone: missing rhs for Sub");
+                    let l = result.pop().expect("clone: missing lhs for Sub");
+                    result.push(Expr::Sub(Box::new(l), Box::new(r)));
+                }
+                Task::BuildMul => {
+                    let r = result.pop().expect("clone: missing rhs for Mul");
+                    let l = result.pop().expect("clone: missing lhs for Mul");
+                    result.push(Expr::Mul(Box::new(l), Box::new(r)));
+                }
+                Task::BuildDiv => {
+                    let r = result.pop().expect("clone: missing rhs for Div");
+                    let l = result.pop().expect("clone: missing lhs for Div");
+                    result.push(Expr::Div(Box::new(l), Box::new(r)));
+                }
+                Task::BuildGt => {
+                    let r = result.pop().expect("clone: missing rhs for Gt");
+                    let l = result.pop().expect("clone: missing lhs for Gt");
+                    result.push(Expr::Gt(Box::new(l), Box::new(r)));
+                }
+                Task::BuildLt => {
+                    let r = result.pop().expect("clone: missing rhs for Lt");
+                    let l = result.pop().expect("clone: missing lhs for Lt");
+                    result.push(Expr::Lt(Box::new(l), Box::new(r)));
+                }
+                Task::BuildGe => {
+                    let r = result.pop().expect("clone: missing rhs for Ge");
+                    let l = result.pop().expect("clone: missing lhs for Ge");
+                    result.push(Expr::Ge(Box::new(l), Box::new(r)));
+                }
+                Task::BuildLe => {
+                    let r = result.pop().expect("clone: missing rhs for Le");
+                    let l = result.pop().expect("clone: missing lhs for Le");
+                    result.push(Expr::Le(Box::new(l), Box::new(r)));
+                }
+                Task::BuildEq => {
+                    let r = result.pop().expect("clone: missing rhs for Eq");
+                    let l = result.pop().expect("clone: missing lhs for Eq");
+                    result.push(Expr::Eq(Box::new(l), Box::new(r)));
+                }
+                Task::BuildNe => {
+                    let r = result.pop().expect("clone: missing rhs for Ne");
+                    let l = result.pop().expect("clone: missing lhs for Ne");
+                    result.push(Expr::Ne(Box::new(l), Box::new(r)));
+                }
+                Task::BuildAnd => {
+                    let r = result.pop().expect("clone: missing rhs for And");
+                    let l = result.pop().expect("clone: missing lhs for And");
+                    result.push(Expr::And(Box::new(l), Box::new(r)));
+                }
+                Task::BuildOr => {
+                    let r = result.pop().expect("clone: missing rhs for Or");
+                    let l = result.pop().expect("clone: missing lhs for Or");
+                    result.push(Expr::Or(Box::new(l), Box::new(r)));
+                }
+                Task::BuildCall(name, n_args) => {
+                    let mut args: Vec<Expr> = Vec::with_capacity(n_args);
+                    for _ in 0..n_args {
+                        args.push(result.pop().expect("clone: missing call arg"));
+                    }
+                    args.reverse(); // popped in reverse, restore source order
+                    result.push(Expr::Call(name, args));
+                }
+            }
+        }
+
+        result.pop().expect("clone: empty result stack")
     }
 }
 
@@ -185,19 +397,136 @@ impl Expr {
         }
     }
 
-    /// Formats the expression, wrapping in parens if needed for precedence.
+    /// Iteratively formats the expression with proper precedence-driven
+    /// parenthesisation. A worklist replaces the previous mutually-recursive
+    /// `Display::fmt` / `fmt_with_precedence` pair so deep ASTs (e.g.
+    /// `1 + 1 + ... + 1` parsed flat) cannot exhaust the call stack.
     fn fmt_with_precedence(
         &self,
         f: &mut fmt::Formatter<'_>,
         parent_prec: Precedence,
     ) -> fmt::Result {
-        let needs_parens = self.precedence() < parent_prec;
-        if needs_parens {
-            write!(f, "(")?;
+        // Each task is something to write next, popped LIFO so children get
+        // visited in source order when pushed in reverse.
+        enum Task<'a> {
+            Visit(&'a Expr, Precedence),
+            Str(&'static str),
         }
-        write!(f, "{}", self)?;
-        if needs_parens {
-            write!(f, ")")?;
+
+        let mut stack: Vec<Task> = vec![Task::Visit(self, parent_prec)];
+
+        while let Some(task) = stack.pop() {
+            match task {
+                Task::Str(s) => f.write_str(s)?,
+                Task::Visit(expr, parent) => {
+                    let needs_parens = expr.precedence() < parent;
+                    if needs_parens {
+                        f.write_str("(")?;
+                        stack.push(Task::Str(")"));
+                    }
+                    match expr {
+                        Expr::Number(val) => {
+                            if val.fract() == 0.0 && val.abs() < 1e15 {
+                                write!(f, "{}", *val as i64)?;
+                            } else {
+                                write!(f, "{}", val)?;
+                            }
+                        }
+                        Expr::Variable(name) => f.write_str(name)?,
+                        Expr::Call(name, args) => {
+                            write!(f, "{}(", name)?;
+                            stack.push(Task::Str(")"));
+                            // Push args in reverse with comma separators so
+                            // the front-of-stack is arg[0], then ", ", arg[1], ...
+                            for (i, arg) in args.iter().enumerate().rev() {
+                                stack.push(Task::Visit(arg, Precedence::Or));
+                                if i > 0 {
+                                    stack.push(Task::Str(", "));
+                                }
+                            }
+                        }
+                        Expr::Not(inner) => {
+                            f.write_str("!")?;
+                            stack.push(Task::Visit(inner, Precedence::Unary));
+                        }
+                        Expr::Neg(inner) => {
+                            f.write_str("-")?;
+                            stack.push(Task::Visit(inner, Precedence::Unary));
+                        }
+                        Expr::Pow(lhs, rhs) => {
+                            // Right-associative: lhs requires Unary tier so
+                            // explicit (a ^ b) ^ c keeps its parens.
+                            stack.push(Task::Visit(rhs, Precedence::Power));
+                            stack.push(Task::Str(" ^ "));
+                            stack.push(Task::Visit(lhs, Precedence::Unary));
+                        }
+                        Expr::Add(lhs, rhs) => {
+                            stack.push(Task::Visit(rhs, Precedence::Additive));
+                            stack.push(Task::Str(" + "));
+                            stack.push(Task::Visit(lhs, Precedence::Additive));
+                        }
+                        Expr::Sub(lhs, rhs) => {
+                            // Right side needs tighter precedence so a - b - c
+                            // round-trips correctly.
+                            stack.push(Task::Visit(rhs, Precedence::Multiplicative));
+                            stack.push(Task::Str(" - "));
+                            stack.push(Task::Visit(lhs, Precedence::Additive));
+                        }
+                        Expr::Mul(lhs, rhs) => {
+                            stack.push(Task::Visit(rhs, Precedence::Multiplicative));
+                            stack.push(Task::Str(" * "));
+                            stack.push(Task::Visit(lhs, Precedence::Multiplicative));
+                        }
+                        Expr::Div(lhs, rhs) => {
+                            // Right side needs tighter precedence so a / b / c
+                            // round-trips correctly.
+                            stack.push(Task::Visit(rhs, Precedence::Power));
+                            stack.push(Task::Str(" / "));
+                            stack.push(Task::Visit(lhs, Precedence::Multiplicative));
+                        }
+                        Expr::Gt(lhs, rhs) => {
+                            stack.push(Task::Visit(rhs, Precedence::Comparison));
+                            stack.push(Task::Str(" > "));
+                            stack.push(Task::Visit(lhs, Precedence::Comparison));
+                        }
+                        Expr::Lt(lhs, rhs) => {
+                            stack.push(Task::Visit(rhs, Precedence::Comparison));
+                            stack.push(Task::Str(" < "));
+                            stack.push(Task::Visit(lhs, Precedence::Comparison));
+                        }
+                        Expr::Ge(lhs, rhs) => {
+                            stack.push(Task::Visit(rhs, Precedence::Comparison));
+                            stack.push(Task::Str(" >= "));
+                            stack.push(Task::Visit(lhs, Precedence::Comparison));
+                        }
+                        Expr::Le(lhs, rhs) => {
+                            stack.push(Task::Visit(rhs, Precedence::Comparison));
+                            stack.push(Task::Str(" <= "));
+                            stack.push(Task::Visit(lhs, Precedence::Comparison));
+                        }
+                        Expr::Eq(lhs, rhs) => {
+                            stack.push(Task::Visit(rhs, Precedence::Comparison));
+                            stack.push(Task::Str(" == "));
+                            stack.push(Task::Visit(lhs, Precedence::Comparison));
+                        }
+                        Expr::Ne(lhs, rhs) => {
+                            stack.push(Task::Visit(rhs, Precedence::Comparison));
+                            stack.push(Task::Str(" != "));
+                            stack.push(Task::Visit(lhs, Precedence::Comparison));
+                        }
+                        Expr::And(lhs, rhs) => {
+                            stack.push(Task::Visit(rhs, Precedence::And));
+                            stack.push(Task::Str(" && "));
+                            stack.push(Task::Visit(lhs, Precedence::And));
+                        }
+                        Expr::Or(lhs, rhs) => {
+                            stack.push(Task::Visit(rhs, Precedence::Or));
+                            stack.push(Task::Str(" || "));
+                            stack.push(Task::Visit(lhs, Precedence::Or));
+                        }
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -205,101 +534,10 @@ impl Expr {
 
 impl fmt::Display for Expr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Expr::Number(val) => {
-                if val.fract() == 0.0 && val.abs() < 1e15 {
-                    write!(f, "{}", *val as i64)
-                } else {
-                    write!(f, "{}", val)
-                }
-            }
-            Expr::Variable(name) => write!(f, "{}", name),
-            Expr::Call(name, args) => {
-                write!(f, "{}(", name)?;
-                for (i, arg) in args.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "{}", arg)?;
-                }
-                write!(f, ")")
-            }
-            Expr::Not(inner) => {
-                write!(f, "!")?;
-                inner.fmt_with_precedence(f, Precedence::Unary)
-            }
-            Expr::Neg(inner) => {
-                write!(f, "-")?;
-                inner.fmt_with_precedence(f, Precedence::Unary)
-            }
-            Expr::Pow(lhs, rhs) => {
-                lhs.fmt_with_precedence(f, Precedence::Power)?;
-                write!(f, " ^ ")?;
-                rhs.fmt_with_precedence(f, Precedence::Power)
-            }
-            Expr::Add(lhs, rhs) => {
-                lhs.fmt_with_precedence(f, Precedence::Additive)?;
-                write!(f, " + ")?;
-                rhs.fmt_with_precedence(f, Precedence::Additive)
-            }
-            Expr::Sub(lhs, rhs) => {
-                lhs.fmt_with_precedence(f, Precedence::Additive)?;
-                write!(f, " - ")?;
-                // Right side needs higher precedence to handle a - b - c correctly
-                rhs.fmt_with_precedence(f, Precedence::Multiplicative)
-            }
-            Expr::Mul(lhs, rhs) => {
-                lhs.fmt_with_precedence(f, Precedence::Multiplicative)?;
-                write!(f, " * ")?;
-                rhs.fmt_with_precedence(f, Precedence::Multiplicative)
-            }
-            Expr::Div(lhs, rhs) => {
-                lhs.fmt_with_precedence(f, Precedence::Multiplicative)?;
-                write!(f, " / ")?;
-                // Right side needs higher precedence to handle a / b / c correctly
-                rhs.fmt_with_precedence(f, Precedence::Power)
-            }
-            Expr::Gt(lhs, rhs) => {
-                lhs.fmt_with_precedence(f, Precedence::Comparison)?;
-                write!(f, " > ")?;
-                rhs.fmt_with_precedence(f, Precedence::Comparison)
-            }
-            Expr::Lt(lhs, rhs) => {
-                lhs.fmt_with_precedence(f, Precedence::Comparison)?;
-                write!(f, " < ")?;
-                rhs.fmt_with_precedence(f, Precedence::Comparison)
-            }
-            Expr::Ge(lhs, rhs) => {
-                lhs.fmt_with_precedence(f, Precedence::Comparison)?;
-                write!(f, " >= ")?;
-                rhs.fmt_with_precedence(f, Precedence::Comparison)
-            }
-            Expr::Le(lhs, rhs) => {
-                lhs.fmt_with_precedence(f, Precedence::Comparison)?;
-                write!(f, " <= ")?;
-                rhs.fmt_with_precedence(f, Precedence::Comparison)
-            }
-            Expr::Eq(lhs, rhs) => {
-                lhs.fmt_with_precedence(f, Precedence::Comparison)?;
-                write!(f, " == ")?;
-                rhs.fmt_with_precedence(f, Precedence::Comparison)
-            }
-            Expr::Ne(lhs, rhs) => {
-                lhs.fmt_with_precedence(f, Precedence::Comparison)?;
-                write!(f, " != ")?;
-                rhs.fmt_with_precedence(f, Precedence::Comparison)
-            }
-            Expr::And(lhs, rhs) => {
-                lhs.fmt_with_precedence(f, Precedence::And)?;
-                write!(f, " && ")?;
-                rhs.fmt_with_precedence(f, Precedence::And)
-            }
-            Expr::Or(lhs, rhs) => {
-                lhs.fmt_with_precedence(f, Precedence::Or)?;
-                write!(f, " || ")?;
-                rhs.fmt_with_precedence(f, Precedence::Or)
-            }
-        }
+        // Or is the lowest tier, so this never adds outer parens — matching
+        // the previous behaviour where Display dispatched directly without
+        // a parent precedence.
+        self.fmt_with_precedence(f, Precedence::Or)
     }
 }
 

@@ -218,3 +218,85 @@ fn test_round_trip_stochastic_from_source() {
         exported
     );
 }
+
+#[test]
+fn test_to_source_preserves_added_ignore_directive() {
+    // Bug 3: directives added programmatically were dropped because
+    // to_source replayed only preamble lines, not ignored_symbols.
+    let mut sys = System::from_source("omega: F\nF -> F F").unwrap();
+    sys.add_directive("#ignore: + - F").unwrap();
+
+    let exported = sys.to_source();
+    assert!(
+        exported.contains("#ignore"),
+        "to_source dropped programmatic #ignore directive: {}",
+        exported
+    );
+
+    // Round-trip: re-parsing must restore the same ignored set.
+    let sys2 = System::from_source(&exported).unwrap();
+    assert_eq!(sys.ignored_symbols.len(), sys2.ignored_symbols.len());
+}
+
+#[test]
+fn test_to_source_preserves_crossover_merged_ignore() {
+    // Bug 3: crossover merges ignored_symbols from both parents but the
+    // offspring inherited preamble only from parent A, so parent B's
+    // #ignore symbols were silently dropped on round-trip.
+    use rand::SeedableRng;
+    use rand_pcg::Pcg64;
+    use symbios::system::crossover::CrossoverConfig;
+
+    let a = System::from_source("#ignore: +\nomega: F\nF -> F F").unwrap();
+    let b = System::from_source("#ignore: -\nomega: F\nF -> F").unwrap();
+
+    let mut rng = Pcg64::seed_from_u64(7);
+    let cfg = CrossoverConfig::default();
+    let offspring = a.crossover_with_rng(&b, &mut rng, &cfg).unwrap();
+
+    let exported = offspring.to_source();
+    let reparsed = System::from_source(&exported).unwrap();
+
+    // Both `+` and `-` from the union must survive the round-trip.
+    let plus = reparsed.interner.resolve_id("+");
+    let minus = reparsed.interner.resolve_id("-");
+    assert!(
+        plus.map(|id| reparsed.ignored_symbols.contains(&id))
+            .unwrap_or(false),
+        "Lost `+` from parent A's ignore list. Source:\n{}",
+        exported
+    );
+    assert!(
+        minus
+            .map(|id| reparsed.ignored_symbols.contains(&id))
+            .unwrap_or(false),
+        "Lost `-` from parent B's ignore list. Source:\n{}",
+        exported
+    );
+}
+
+#[test]
+fn test_dormant_rule_round_trips_disabled() {
+    // Bug 4: export_rule overwrote a numeric condition with the rule's
+    // probability, resurrecting `0.5 : A : 0.0 -> B` (fires never) into
+    // `A : 0.5 -> B` (fires with weight 0.5).
+    let source = "omega: A\n0.5 : A : 0.0 -> B";
+    let sys = System::from_source(source).unwrap();
+    let exported = sys.to_source();
+
+    // The exported rule must still encode the dormant 0.0 condition. Either
+    // the explicit form `0.5 : A : 0 -> B` or any form whose condition
+    // evaluates to 0 — re-derivation is the authoritative check.
+    let mut sys2 = System::from_source(&exported).unwrap();
+    sys2.set_seed(1);
+    sys2.derive(1).unwrap();
+
+    // Rule is dormant: A must remain A after derivation.
+    let rendered = format!("{}", sys2.state.display(&sys2.interner));
+    assert_eq!(
+        rendered.trim(),
+        "A",
+        "Dormant rule fired after round-trip; exported form: {}",
+        exported
+    );
+}
