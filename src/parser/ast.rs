@@ -1,22 +1,47 @@
+/// An expression node in a rule's parameter or condition.
+///
+/// Constructed by the parser and consumed by [`crate::vm::Compiler`] to emit
+/// bytecode. The [`std::fmt::Display`] impl emits source text with proper
+/// parenthesisation for round-tripping.
 #[derive(Debug, PartialEq, Clone)]
 pub enum Expr {
+    /// A numeric literal.
     Number(f64),
+    /// A bound name — a rule parameter, the reserved `age`, or a `#define`d
+    /// constant. Resolution happens at compile time.
     Variable(String),
+    /// A built-in math function call. The function name must match one of
+    /// the [`crate::vm::MathOp`] entries (case-sensitive).
     Call(String, Vec<Expr>),
+    /// Logical negation (`!x`).
     Not(Box<Expr>),
+    /// Arithmetic negation (`-x`).
     Neg(Box<Expr>),
+    /// Power (`a ^ b`, right-associative).
     Pow(Box<Expr>, Box<Expr>),
+    /// Addition.
     Add(Box<Expr>, Box<Expr>),
+    /// Subtraction.
     Sub(Box<Expr>, Box<Expr>),
+    /// Multiplication.
     Mul(Box<Expr>, Box<Expr>),
+    /// Division. Division by zero produces a VM math error at eval time.
     Div(Box<Expr>, Box<Expr>),
+    /// Greater-than. Epsilon-aware at eval time.
     Gt(Box<Expr>, Box<Expr>),
+    /// Less-than. Epsilon-aware at eval time.
     Lt(Box<Expr>, Box<Expr>),
+    /// Greater-or-equal. Epsilon-aware at eval time.
     Ge(Box<Expr>, Box<Expr>),
+    /// Less-or-equal. Epsilon-aware at eval time.
     Le(Box<Expr>, Box<Expr>),
+    /// Equality. Epsilon-aware at eval time.
     Eq(Box<Expr>, Box<Expr>),
+    /// Inequality. Epsilon-aware at eval time.
     Ne(Box<Expr>, Box<Expr>),
+    /// Logical AND (any non-zero is true).
     And(Box<Expr>, Box<Expr>),
+    /// Logical OR (any non-zero is true).
     Or(Box<Expr>, Box<Expr>),
 }
 
@@ -67,20 +92,43 @@ impl Expr {
     }
 }
 
+/// A parsed module reference (axiom element, predecessor, context entry,
+/// or successor): a symbol name plus its parameter expressions.
 #[derive(Debug, PartialEq, Clone)]
 pub struct ModuleSym {
+    /// The module's symbol name (e.g. `"A"`, `"+"`, `"F"`).
     pub symbol: String,
+    /// Parameter expressions in source order. Empty for parameter-less modules.
     pub params: Vec<Expr>,
 }
 
+/// A parsed production rule.
+///
+/// `Rule` carries everything the parser captured for one rule. Compile it via
+/// [`crate::System::add_rule`] (or the lower-level [`crate::vm::Compiler`]) to
+/// produce a [`crate::system::RuntimeRule`].
 #[derive(Debug, PartialEq, Clone)]
 pub struct Rule {
+    /// Optional labeled identifier (`label:` prefix). Not used at runtime —
+    /// preserved for tooling.
     pub label: Option<String>,
+    /// Stochastic weight. Defaults to `1.0` when neither a probability
+    /// prefix (`0.5 : A -> B`) nor a numeric condition sugar (`A : 0.5 -> B`)
+    /// is present.
     pub probability: f64,
+    /// The module being replaced.
     pub predecessor: ModuleSym,
+    /// Left context modules in left-to-right order (rightmost is adjacent
+    /// to the predecessor).
     pub left_context: Vec<ModuleSym>,
+    /// Right context modules in left-to-right order (leftmost is adjacent
+    /// to the predecessor).
     pub right_context: Vec<ModuleSym>,
+    /// Optional guard expression. The rule fires only when this evaluates
+    /// to a non-zero value. A bare numeric condition is interpreted as a
+    /// probability when no explicit probability prefix was given.
     pub condition: Option<Expr>,
+    /// The replacement sequence.
     pub successors: Vec<ModuleSym>,
     /// Per-rule ignore-list override (issue #95). `None` means the rule
     /// inherits the system-global `#ignore` list at match time. `Some(list)`
@@ -89,9 +137,13 @@ pub struct Rule {
     pub ignored_symbols: Option<Vec<String>>,
 }
 
+/// A parsed top-level directive (`#define` or `#ignore`).
 #[derive(Debug, PartialEq, Clone)]
 pub enum Directive {
+    /// `#ignore: <syms>` — symbols to skip during context matching.
     Ignore(Vec<String>),
+    /// `#define <name> <expr>` — a named constant. The expression is
+    /// evaluated at directive time against constants already in scope.
     Define(String, Expr),
 }
 

@@ -10,10 +10,15 @@
 //!
 //! ## Key Features
 //!
-//! *   **Sovereign Architecture**: Zero heavy dependencies.
+//! *   **Sovereign Architecture**: Pure Rust, only `nom`, `rand`, `thiserror`, `serde`.
 //! *   **Structure-of-Arrays (SoA)**: Optimized memory layout for cache locality.
 //! *   **Parametric**: Full support for arithmetic expressions in rules.
 //! *   **Context-Sensitive**: `(k,l)-systems` with variable binding.
+//! *   **Evolvable**: Mutation, crossover, and source-text round-tripping for
+//!     genetic-algorithm workflows. See [`SourceGenotype`] and the
+//!     [`system::mutate`] / [`system::crossover`] modules.
+//! *   **Zero `unsafe`**: All safety via Rust's type system and explicit
+//!     bounds checks.
 //!
 //! ## Example
 //!
@@ -26,6 +31,14 @@
 //! sys.set_axiom("A(0)").unwrap();
 //! sys.derive(5).unwrap();
 //! ```
+//!
+//! ## Source round-tripping
+//!
+//! [`System::from_source`] parses a whole L-system file (directives, axiom,
+//! rules, and comments). [`System::to_source`] reverses the process,
+//! emitting a deterministic, lossless serialization that preserves
+//! parameter names and the preamble. This pair is what makes
+//! [`SourceGenotype`] possible.
 
 pub mod core;
 pub mod parser;

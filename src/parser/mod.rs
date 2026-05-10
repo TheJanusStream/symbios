@@ -60,6 +60,13 @@ fn finite_float(input: &str) -> IResult<&str, f64> {
     Ok((input, val))
 }
 
+/// Parses an arithmetic / logical expression (the right-hand side of a
+/// parameter or a rule condition).
+///
+/// Supports the standard precedence ladder (lowest to highest):
+/// `|` (or), `&` (and), comparison (`==`/`!=`/`<`/`>`/`<=`/`>=`/`=`),
+/// `+`/`-`, `*`/`/`, unary `!`/`-`, and `^` (right-associative). Calls of
+/// built-in math functions (`sin(x)`, `max(a, b)`, …) are supported as atoms.
 pub fn parse_expr(input: &str) -> IResult<&str, Expr> {
     ws(|i| parse_expr_impl(i, 0)).parse(input)
 }
@@ -243,6 +250,11 @@ fn parse_symbol(input: &str) -> IResult<&str, String> {
     .parse(input)
 }
 
+/// Parses a single module reference, e.g. `A`, `+`, `F(1.0)`, `B(x + 1, y)`.
+///
+/// A module is either an identifier symbol or one of the single-char turtle
+/// symbols (`+-/&^[]|\!$%~',@#;`), optionally followed by a parenthesised
+/// expression list.
 pub fn parse_module(input: &str) -> IResult<&str, ModuleSym> {
     ws(|i| parse_module_impl(i, 0)).parse(input)
 }
@@ -411,6 +423,13 @@ fn parse_rule_ignore_postfix(input: &str) -> IResult<&str, Vec<String>> {
     Ok((curr, symbols))
 }
 
+/// Parses a complete production rule.
+///
+/// Grammar (informal): `[<label>:] [<prob> :] [<left>... <] <pred> [> <right>...] [: <cond>] -> <succ>... [{ ignore: <syms> }]`
+///
+/// Both `<prob>` (a leading float followed by `:`) and the condition's
+/// numeric-only form serve as a stochastic weight. A label, when present,
+/// is preserved on [`Rule::label`] for tooling; it is not used at runtime.
 pub fn parse_rule(input: &str) -> IResult<&str, Rule> {
     alt((
         map(
@@ -428,6 +447,11 @@ pub fn parse_rule(input: &str) -> IResult<&str, Rule> {
     .parse(input)
 }
 
+/// Parses a `#`-prefixed directive line.
+///
+/// Two forms: `#ignore: <syms>` and `#define <name> <expr>`. The expression
+/// form is evaluated against the directives already seen, so a later
+/// `#define` may reference earlier constants but not later ones.
 pub fn parse_directive(input: &str) -> IResult<&str, Directive> {
     preceded(
         ws(c_char('#')),

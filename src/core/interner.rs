@@ -2,6 +2,16 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::HashMap;
 use std::sync::Arc;
 
+/// A bidirectional string ↔ `u16` interner used throughout the runtime.
+///
+/// Module symbols are stored as `u16` IDs everywhere the runtime cares about
+/// performance ([`crate::core::SymbiosState`], [`crate::system::RuntimeRule`],
+/// matching scratch buffers); the `SymbolTable` is what maps each ID back to
+/// the source-text name when needed (e.g., for export or display).
+///
+/// Storage uses `Arc<str>` shared between the forward and reverse maps so
+/// each unique name is allocated once. A byte budget ([`Self::with_capacity`])
+/// guards against malicious or runaway interning.
 #[derive(Debug, Clone)]
 pub struct SymbolTable {
     to_id: HashMap<Arc<str>, u16>,
@@ -17,10 +27,14 @@ impl Default for SymbolTable {
 }
 
 impl SymbolTable {
+    /// Creates a `SymbolTable` with the default 10 MiB byte budget.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Creates a `SymbolTable` with a custom maximum total bytes for stored
+    /// symbol names. `get_or_intern` / `intern` return `Err` once the budget
+    /// would be exceeded.
     pub fn with_capacity(max_bytes: usize) -> Self {
         Self {
             to_id: HashMap::new(),
@@ -39,6 +53,10 @@ impl SymbolTable {
         self.intern(name)
     }
 
+    /// Interns `name`, returning the existing ID if already interned or
+    /// assigning a new one otherwise. Equivalent to [`Self::get_or_intern`]
+    /// but without the inline fast-path duplication; most callers should
+    /// prefer `get_or_intern`.
     pub fn intern(&mut self, name: &str) -> Result<u16, String> {
         // 1. Fast check
         if let Some(&id) = self.to_id.get(name) {
@@ -66,18 +84,24 @@ impl SymbolTable {
         Ok(id)
     }
 
+    /// Looks up the ID for an already-interned name. Returns `None` if the
+    /// name has never been interned.
     pub fn resolve_id(&self, name: &str) -> Option<u16> {
         self.to_id.get(name).copied()
     }
 
+    /// Resolves an ID back to its string form. Returns `None` if the ID was
+    /// never produced by this table.
     pub fn resolve(&self, id: u16) -> Option<&str> {
         self.to_str.get(id as usize).map(|s| &**s)
     }
 
+    /// The number of distinct symbols interned so far.
     pub fn len(&self) -> usize {
         self.to_str.len()
     }
 
+    /// True iff no symbols have been interned.
     pub fn is_empty(&self) -> bool {
         self.to_str.is_empty()
     }

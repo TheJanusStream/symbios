@@ -19,7 +19,7 @@ It fully implements the syntax and semantics described in *The Algorithmic Beaut
 
 ```toml
 [dependencies]
-symbios = "1.4"
+symbios = "1.5"
 ```
 
 ```rust
@@ -49,7 +49,8 @@ For evolutionary loops that operate at the source-text level:
 
 ```rust
 use symbios::SourceGenotype;
-use symbios::system::{MutationConfig, CrossoverConfig};
+use symbios::system::mutate::MutationConfig;
+use symbios::system::crossover::CrossoverConfig;
 use rand::SeedableRng;
 use rand_pcg::Pcg64;
 
@@ -74,7 +75,8 @@ Symbios includes a comprehensive toolkit for evolutionary optimization of L-Syst
 ### Basic Mutation
 
 ```rust
-use symbios::{System, system::{MutationConfig, StructuralMutationConfig}};
+use symbios::System;
+use symbios::system::mutate::{MutationConfig, StructuralMutationConfig};
 
 let mut sys = System::new();
 sys.add_rule("0.5: A -> A A").unwrap();
@@ -108,7 +110,7 @@ sys.structural_mutate(&structural_config);
 ### Advanced Mutation Operators
 
 ```rust
-use symbios::system::{
+use symbios::system::mutate::{
     OperatorFlipConfig, RuleDuplicationConfig,
     TopologicalMutationConfig, LiteralPromotionConfig,
 };
@@ -140,7 +142,8 @@ sys.literal_to_constant_promote(&LiteralPromotionConfig {
 ### Crossover
 
 ```rust
-use symbios::{System, system::{CrossoverConfig, AdvancedCrossoverConfig, CrossoverStrategy}};
+use symbios::System;
+use symbios::system::crossover::{CrossoverConfig, AdvancedCrossoverConfig, CrossoverStrategy};
 
 let mut parent_a = System::new();
 parent_a.add_rule("A -> A A").unwrap();

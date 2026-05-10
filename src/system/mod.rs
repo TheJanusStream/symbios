@@ -204,6 +204,25 @@ impl System {
         self.rng = Pcg64::seed_from_u64(seed);
     }
 
+    /// Parses and applies a directive line.
+    ///
+    /// Two directive forms are supported:
+    /// - `#ignore: <symbols...>` — appends symbols to the global ignore list
+    ///   used during context matching. Symbols already present are not
+    ///   duplicated.
+    /// - `#define <name> <expr>` — evaluates the expression (over current
+    ///   constants only) and stores the resulting `f64` under `name`. Later
+    ///   rules and axioms can reference `name` in their expressions.
+    ///
+    /// # Example
+    /// ```
+    /// use symbios::System;
+    ///
+    /// let mut sys = System::new();
+    /// sys.add_directive("#define ANGLE 45").unwrap();
+    /// sys.add_directive("#ignore: + - F").unwrap();
+    /// assert_eq!(sys.constants["ANGLE"], 45.0);
+    /// ```
     pub fn add_directive(&mut self, directive_src: &str) -> Result<(), SystemError> {
         let (_, directive) = parser::parse_directive(directive_src)
             .map_err(|e| SystemError::ParseError(e.to_string()))?;

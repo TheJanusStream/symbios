@@ -2,12 +2,24 @@ use crate::parser::ast::Expr;
 use crate::vm::ops::{MathOp, Op};
 use std::collections::HashMap;
 
+/// Compiles a parser [`Expr`] into a flat bytecode program for the
+/// [`crate::vm::VirtualMachine`].
+///
+/// Name resolution is layered: the reserved name `age` always emits
+/// [`Op::LoadAge`]; otherwise the compiler first checks the parameter map
+/// (emitting [`Op::LoadParam`]) and then the `#define` constant table
+/// (inlining the value as [`Op::Push`]). Unknown names are an error.
 pub struct Compiler<'a> {
     param_map: Vec<String>,
     constants: &'a HashMap<String, f64>,
 }
 
 impl<'a> Compiler<'a> {
+    /// Creates a compiler bound to the given parameter list and constant table.
+    ///
+    /// `params` should list parameter names in the order they will appear in
+    /// the runtime context frame: predecessor params first, then left context,
+    /// then right context.
     pub fn new(params: Vec<String>, constants: &'a HashMap<String, f64>) -> Self {
         Self {
             param_map: params,
@@ -15,6 +27,10 @@ impl<'a> Compiler<'a> {
         }
     }
 
+    /// Compiles a single expression to bytecode.
+    ///
+    /// Returns `Err` on an unknown identifier, an unknown function name, or
+    /// a function call with the wrong arity.
     pub fn compile(&mut self, expr: &Expr) -> Result<Vec<Op>, String> {
         let mut ops = Vec::new();
         self.compile_expr(expr, &mut ops)?;

@@ -47,13 +47,28 @@ pub fn float_eq_eps(a: f64, b: f64, relative_eps: f64) -> bool {
     diff / (abs_a + abs_b).min(f64::MAX) < relative_eps
 }
 
+/// Errors produced by [`VirtualMachine::eval`].
+///
+/// Note that [`VirtualMachine::eval`] returns `Result<f64, String>`; the string
+/// is produced via the [`std::fmt::Display`] impl on this enum, so callers that
+/// want structured handling should match on the displayed text.
 #[derive(Debug, PartialEq)]
 pub enum VMError {
+    /// A binary or unary op tried to pop from an empty stack.
     StackUnderflow,
+    /// The bytecode would have pushed past the VM's max stack depth (256).
     StackOverflow,
+    /// An arithmetic op produced NaN (e.g. `0.0 / 0.0`). Infinity is clamped
+    /// to `f64::MAX` / `f64::MIN` rather than erroring; see
+    /// [`VirtualMachine::eval`].
     MathError,
+    /// [`crate::vm::Op::LoadParam`] referenced an index past the supplied
+    /// context frame.
     ParamOutOfBounds,
+    /// Bytecode ended with no value on the stack (e.g. empty program).
     EmptyStack,
+    /// Reserved for caller-supplied error strings; not produced by the VM
+    /// itself.
     RuntimeError(String),
 }
 
@@ -72,6 +87,23 @@ impl fmt::Display for VMError {
 
 impl std::error::Error for VMError {}
 
+/// Stack-based evaluator for the compiled rule bytecode (see [`Op`]).
+///
+/// A single VM instance can be reused across many `eval` calls — the stack is
+/// cleared at the start of each call. Comparison ops use an epsilon-aware
+/// equality test ([`float_eq_eps`]) so that small round-off does not flip
+/// rule guards across generations.
+///
+/// # Example
+/// ```
+/// use symbios::vm::{Op, VirtualMachine};
+///
+/// // bytecode for `x + 1` with `x` at param index 0
+/// let code = vec![Op::LoadParam(0), Op::Push(1.0), Op::Add];
+/// let mut vm = VirtualMachine::new();
+/// let result = vm.eval(&code, &[5.0], 0.0).unwrap();
+/// assert_eq!(result, 6.0);
+/// ```
 #[derive(Debug)]
 pub struct VirtualMachine {
     stack: Vec<f64>,
@@ -94,6 +126,7 @@ impl Default for VirtualMachine {
 impl VirtualMachine {
     const MAX_STACK_SIZE: usize = 256;
 
+    /// Creates a fresh VM using [`DEFAULT_RELATIVE_EPSILON`] for comparisons.
     pub fn new() -> Self {
         Self {
             stack: Vec::with_capacity(64),
@@ -129,6 +162,18 @@ impl VirtualMachine {
         self.relative_epsilon
     }
 
+    /// Evaluates a bytecode program and returns the top-of-stack value.
+    ///
+    /// `params` is the flat context frame: predecessor params first, then any
+    /// left/right context params (in the order they were captured by the
+    /// matcher). [`Op::LoadParam`] indexes into this slice. `predecessor_age`
+    /// is the value returned for [`Op::LoadAge`].
+    ///
+    /// Returns [`VMError`] (rendered via `Display`) on stack underflow/
+    /// overflow, parameter index out-of-bounds, NaN, or an empty result
+    /// stack. Infinite intermediate values are silently clamped to
+    /// `f64::MAX` / `f64::MIN` to keep evolutionary runs from being killed
+    /// by transient singularities.
     pub fn eval(
         &mut self,
         code: &[Op],

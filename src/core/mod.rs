@@ -6,20 +6,30 @@ use serde::{Deserialize, Serialize};
 
 use crate::SymbolTable;
 
+/// Errors produced by [`SymbiosState`] operations.
 #[derive(Error, Debug, PartialEq)]
 pub enum SymbiosError {
+    /// A module's parameter count exceeded the `u16` limit.
     #[error("Parameter count {0} exceeds limit {1}")]
     ParameterOverflow(usize, u16),
+    /// Bracket pairs did not balance during topology calculation. The index
+    /// identifies the first offending bracket.
     #[error("Unmatched bracket at index {0}")]
     UnmatchedBracket(usize),
+    /// `calculate_topology_kind` was called with identical open/close symbols.
     #[error("Ambiguous topology symbols")]
     AmbiguousTopology,
+    /// Bracket nesting exceeded the 4096-deep stack limit (DoS protection).
     #[error("Max nesting depth exceeded")]
     MaxNestingExceeded,
+    /// Pushing the new module would exceed `max_capacity` or the internal
+    /// `u32` index space.
     #[error("State capacity overflow")]
     CapacityOverflow,
+    /// A module-index argument was out of range.
     #[error("Internal index out of bounds: {0}")]
     InvalidIndex(usize),
+    /// Attempted to push a NaN or infinite age/parameter value.
     #[error("Non-finite numeric value detected (NaN/Inf)")]
     InvalidNumericValue,
 }
@@ -100,10 +110,13 @@ impl Default for SymbiosState {
 impl SymbiosState {
     const NO_LINK: u32 = u32::MAX;
 
+    /// Creates an empty state with the default 1,000,000-module capacity.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Removes all modules and resets `current_time` to zero. Capacity of
+    /// the underlying buffers is preserved.
     pub fn clear(&mut self) {
         self.modules.clear();
         self.params.clear();
@@ -115,6 +128,7 @@ impl SymbiosState {
         self.modules.len()
     }
 
+    /// True iff `len() == 0`.
     pub fn is_empty(&self) -> bool {
         self.modules.is_empty()
     }
@@ -190,7 +204,7 @@ impl SymbiosState {
     /// modules' slots, so callers that change `open_sym`/`close_sym` between
     /// runs may observe stale links on modules whose symbol no longer matches.
     /// In normal operation this is fine: derivations rebuild state into a
-    /// fresh back buffer where every slot starts at [`Self::NO_LINK`].
+    /// fresh back buffer where every slot starts unlinked.
     pub fn calculate_topology_kind(
         &mut self,
         open_sym: u16,
@@ -250,6 +264,11 @@ impl SymbiosState {
         })
     }
 
+    /// Advances `current_time` by `dt`, increasing the age of every module
+    /// (since module age is computed as `current_time - birth_time`).
+    ///
+    /// `dt` must be finite and non-negative. Errors if the resulting time
+    /// would overflow to a non-finite value.
     pub fn advance_time(&mut self, dt: f64) -> Result<(), String> {
         if !dt.is_finite() || dt < 0.0 {
             return Err(format!("Invalid time step: {}", dt));
