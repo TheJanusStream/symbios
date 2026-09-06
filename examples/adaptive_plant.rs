@@ -20,7 +20,6 @@ use symbios::System;
 /// Environmental factors:
 /// - Light: High at the top (apex), decreases downward
 /// - Nutrients: Shared resource, affects growth rate
-
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut sys = System::new();
     sys.set_seed(42); // Deterministic stochastic behavior

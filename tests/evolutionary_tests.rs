@@ -997,7 +997,7 @@ fn test_crossover_no_symbol_aliasing() {
     assert!(gamma_id.is_some(), "Gamma should be interned");
 
     // All IDs should be unique
-    let ids = vec![alpha_id.unwrap(), beta_id.unwrap(), gamma_id.unwrap()];
+    let ids = [alpha_id.unwrap(), beta_id.unwrap(), gamma_id.unwrap()];
     let unique_ids: std::collections::HashSet<_> = ids.iter().collect();
     assert_eq!(
         ids.len(),
@@ -1574,10 +1574,10 @@ fn test_homologous_crossover_selects_individual_rules() {
             .advanced_crossover_with_rng(&parent_b, &mut rng, &config)
             .unwrap();
 
-        if let Some(a_id) = offspring.interner.resolve_id("A") {
-            if let Some(rules) = offspring.rules.get(&a_id) {
-                *rule_counts.entry(rules.len()).or_insert(0) += 1;
-            }
+        if let Some(a_id) = offspring.interner.resolve_id("A")
+            && let Some(rules) = offspring.rules.get(&a_id)
+        {
+            *rule_counts.entry(rules.len()).or_insert(0) += 1;
         }
     }
 
@@ -1614,21 +1614,21 @@ fn test_blx_alpha_blends_matching_rules() {
         .unwrap();
 
     // Find the Push value in offspring
-    if let Some(a_id) = offspring.interner.resolve_id("A") {
-        if let Some(rules) = offspring.rules.get(&a_id) {
-            let push_val = rules[0].successors[0].params[0]
-                .iter()
-                .find_map(|op| if let Op::Push(v) = op { Some(*v) } else { None });
+    if let Some(a_id) = offspring.interner.resolve_id("A")
+        && let Some(rules) = offspring.rules.get(&a_id)
+    {
+        let push_val = rules[0].successors[0].params[0]
+            .iter()
+            .find_map(|op| if let Op::Push(v) = op { Some(*v) } else { None });
 
-            if let Some(val) = push_val {
-                // With BLX-alpha=0.5, value should be in extended range [5, 25]
-                // (10 and 20 with alpha expansion)
-                assert!(
-                    val >= 5.0 && val <= 25.0,
-                    "BLX-alpha should produce value in extended range, got {}",
-                    val
-                );
-            }
+        if let Some(val) = push_val {
+            // With BLX-alpha=0.5, value should be in extended range [5, 25]
+            // (10 and 20 with alpha expansion)
+            assert!(
+                (5.0..=25.0).contains(&val),
+                "BLX-alpha should produce value in extended range, got {}",
+                val
+            );
         }
     }
 }

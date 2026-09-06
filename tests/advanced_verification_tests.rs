@@ -8,7 +8,7 @@ fn test_1_stochastic_normalization() {
     sys.add_rule("0.1 : A -> C").unwrap();
 
     sys.set_seed(123);
-    let _ = sys.set_axiom("A A A A A A A A A A").unwrap(); // 10 iterations
+    sys.set_axiom("A A A A A A A A A A").unwrap(); // 10 iterations
     sys.derive(1).unwrap();
 
     let output = format!("{}", sys.state.display(&sys.interner));
@@ -101,7 +101,6 @@ fn test_5_total_mass_safety_limit() {
     // Check for the specific wrapped variant
     match res {
         Err(symbios::system::SystemError::State(symbios::core::SymbiosError::CapacityOverflow)) => {
-            ()
         }
         other => panic!(
             "Expected SystemError::State(CapacityOverflow), got {:?}",

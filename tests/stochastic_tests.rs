@@ -178,7 +178,7 @@ fn test_stochastic_ratio_preserved_under_tiny_weights() {
     sys.set_seed(42);
     // Build a long axiom of A's so a single derive() produces many samples.
     let n = 5000usize;
-    let axiom: String = std::iter::repeat("A").take(n).collect::<Vec<_>>().join(" ");
+    let axiom: String = std::iter::repeat_n("A", n).collect::<Vec<_>>().join(" ");
     sys.set_axiom(&axiom).unwrap();
     sys.derive(1).unwrap();
 
@@ -225,7 +225,7 @@ fn test_stochastic_subnormal_total_no_panic_no_first_bias() {
 
     sys.set_seed(7);
     let n = 2000usize;
-    let axiom: String = std::iter::repeat("A").take(n).collect::<Vec<_>>().join(" ");
+    let axiom: String = std::iter::repeat_n("A", n).collect::<Vec<_>>().join(" ");
     sys.set_axiom(&axiom).unwrap();
     sys.derive(1).unwrap(); // must not panic
 

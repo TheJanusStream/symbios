@@ -651,6 +651,9 @@ impl fmt::Display for Directive {
 mod tests {
     use super::*;
 
+    // `3.14` is test data for decimal formatting, not an approximation of
+    // pi: the assertion is on the rendered string "3.14".
+    #[allow(clippy::approx_constant)]
     #[test]
     fn test_format_number() {
         assert_eq!(Expr::Number(42.0).to_string(), "42");
@@ -870,6 +873,9 @@ mod tests {
         assert_eq!(rule.to_string(), "0.5 : A -> B");
     }
 
+    // `3.14159` is the value a `#define PI` directive carries, checked for
+    // round-tripping; it is deliberately not `std::f64::consts::PI`.
+    #[allow(clippy::approx_constant)]
     #[test]
     fn test_format_directive() {
         let ignore = Directive::Ignore(vec!["F".into(), "f".into()]);

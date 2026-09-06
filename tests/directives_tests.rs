@@ -1,5 +1,8 @@
 use symbios::System;
 
+// `6.28318` is 2 x the PI *this test defines* (3.14159), which is what
+// constant propagation is being checked against — not `std::f64::consts::TAU`.
+#[allow(clippy::approx_constant)]
 #[test]
 fn test_define_constants() {
     let mut sys = System::new();
