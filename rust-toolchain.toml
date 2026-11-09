@@ -13,5 +13,5 @@
 # CI reads THIS FILE via actions-rust-lang/setup-rust-toolchain rather than
 # repeating the version in the workflow — a second copy of a pin is a pin that
 # drifts.
-channel = "1.96.1"
+channel = "1.98.1"
 components = ["rustfmt", "clippy"]
