@@ -137,6 +137,18 @@ impl Default for StructuralMutationConfig {
 }
 
 impl System {
+    /// Rule predecessors in ascending id order.
+    ///
+    /// `rules` is a `HashMap` whose iteration order differs between two
+    /// systems parsed from the same source (each map has its own random
+    /// state). Every operator that draws random numbers per rule walks the
+    /// rules in this order instead, so a seeded RNG repeats the same edit.
+    pub(crate) fn rule_keys_in_order(&self) -> Vec<u16> {
+        let mut keys: Vec<u16> = self.rules.keys().copied().collect();
+        keys.sort_unstable();
+        keys
+    }
+
     /// Mutates the system in-place for evolutionary algorithms.
     ///
     /// This method randomly perturbs rule probabilities and constants based on
@@ -172,7 +184,10 @@ impl System {
     /// This variant allows using a shared RNG across multiple systems
     /// for coordinated evolution experiments.
     pub fn mutate_with_rng<R: Rng>(&mut self, rng: &mut R, config: &MutationConfig) {
-        for rules in self.rules.values_mut() {
+        for key in self.rule_keys_in_order() {
+            let Some(rules) = self.rules.get_mut(&key) else {
+                continue;
+            };
             for rule in rules.iter_mut() {
                 if rng.random::<f64>() < config.rule_probability_rate {
                     let delta = rng.random_range(
@@ -183,7 +198,9 @@ impl System {
             }
         }
 
-        let constant_keys: Vec<String> = self.constants.keys().cloned().collect();
+        // Sorted for the same reason as `rule_keys_in_order`.
+        let mut constant_keys: Vec<String> = self.constants.keys().cloned().collect();
+        constant_keys.sort_unstable();
         for key in constant_keys {
             if rng.random::<f64>() < config.constant_rate
                 && let Some(val) = self.constants.get_mut(&key)
@@ -196,7 +213,10 @@ impl System {
 
         // Gaussian jitter on bytecode literals (Issue #53)
         if config.gaussian_jitter_scale > 0.0 && config.gaussian_jitter_rate > 0.0 {
-            for rules in self.rules.values_mut() {
+            for key in self.rule_keys_in_order() {
+                let Some(rules) = self.rules.get_mut(&key) else {
+                    continue;
+                };
                 for rule in rules.iter_mut() {
                     // Apply to condition bytecode
                     if let Some(ref mut cond) = rule.condition {
@@ -246,7 +266,10 @@ impl System {
             return;
         }
 
-        for rules in self.rules.values_mut() {
+        for key in self.rule_keys_in_order() {
+            let Some(rules) = self.rules.get_mut(&key) else {
+                continue;
+            };
             for rule in rules.iter_mut() {
                 if rng.random::<f64>() >= config.successor_rate {
                     continue;
@@ -395,7 +418,10 @@ impl System {
         rng: &mut R,
         config: &OperatorFlipConfig,
     ) {
-        for rules in self.rules.values_mut() {
+        for key in self.rule_keys_in_order() {
+            let Some(rules) = self.rules.get_mut(&key) else {
+                continue;
+            };
             for rule in rules.iter_mut() {
                 if let Some(ref mut cond) = rule.condition {
                     Self::flip_operators_in_bytecode(rng, cond, config);
@@ -449,7 +475,7 @@ impl System {
         rng: &mut R,
         config: &RuleDuplicationConfig,
     ) {
-        let pred_keys: Vec<u16> = self.rules.keys().copied().collect();
+        let pred_keys = self.rule_keys_in_order();
 
         for pred in pred_keys {
             let rules = match self.rules.get_mut(&pred) {
@@ -543,7 +569,10 @@ impl System {
             return;
         }
 
-        for rules in self.rules.values_mut() {
+        for key in self.rule_keys_in_order() {
+            let Some(rules) = self.rules.get_mut(&key) else {
+                continue;
+            };
             for rule in rules.iter_mut() {
                 for successor in &mut rule.successors {
                     if rng.random::<f64>() < config.swap_rate
@@ -576,14 +605,20 @@ impl System {
             return;
         }
 
-        // Build constant value -> name mapping
-        let const_values: Vec<(String, f64)> = self
+        // Build constant value -> name mapping, sorted by name: a literal is
+        // promoted to the first constant within tolerance, and the map's own
+        // order differs from run to run.
+        let mut const_values: Vec<(String, f64)> = self
             .constants
             .iter()
             .map(|(k, v)| (k.clone(), *v))
             .collect();
+        const_values.sort_unstable_by(|a, b| a.0.cmp(&b.0));
 
-        for rules in self.rules.values_mut() {
+        for key in self.rule_keys_in_order() {
+            let Some(rules) = self.rules.get_mut(&key) else {
+                continue;
+            };
             for rule in rules.iter_mut() {
                 if let Some(ref mut cond) = rule.condition {
                     Self::promote_literals_in_bytecode(rng, cond, &const_values, config);

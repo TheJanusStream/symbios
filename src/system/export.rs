@@ -34,7 +34,12 @@ impl System {
     pub fn export_rules(&self) -> Vec<(String, String)> {
         let mut results = Vec::new();
 
-        for rules in self.rules.values() {
+        // In predecessor-id order, so the same system always exports the
+        // same text (the rule map's own order differs from run to run).
+        for key in self.rule_keys_in_order() {
+            let Some(rules) = self.rules.get(&key) else {
+                continue;
+            };
             for rule in rules {
                 let config = ExportConfig::from_rule(rule);
                 if let Ok(source) = export_rule_to_string(rule, &self.interner, &config) {

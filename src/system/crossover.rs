@@ -166,6 +166,12 @@ impl System {
         let mut rules_from_self: HashSet<u16> = HashSet::new();
         let mut rules_from_other: HashSet<u16> = HashSet::new();
 
+        // Walk the predecessors in ascending order: one random draw is made per
+        // predecessor both parents define, and a HashSet's order differs
+        // between runs, so iterating it directly made a seeded crossover
+        // pick different rules each time.
+        let mut all_predecessors: Vec<u16> = all_predecessors.into_iter().collect();
+        all_predecessors.sort_unstable();
         for new_pred in all_predecessors {
             let self_pred = reverse_map_self.get(new_pred as usize).copied().flatten();
             let other_pred = reverse_map_other.get(new_pred as usize).copied().flatten();
@@ -389,7 +395,11 @@ impl System {
             .map(|(&old, &new)| (new, old))
             .collect();
 
-        // Homologous crossover: select individual rules from each parent
+        // Homologous crossover: select individual rules from each parent.
+        // In ascending order, as in `crossover_with_rng`: draws are made per
+        // rule, and a HashSet's order differs between runs.
+        let mut all_predecessors: Vec<u16> = all_predecessors.into_iter().collect();
+        all_predecessors.sort_unstable();
         for new_pred in all_predecessors {
             let self_pred = reverse_map_self.get(&new_pred).copied();
             let other_pred = reverse_map_other.get(&new_pred).copied();
